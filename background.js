@@ -1,11 +1,13 @@
 const DEFAULT_PROMPT = [
   'Apply the edits below to the source file referenced by the url.',
   'For each Before/After pair: locate the Before HTML in the file and replace it with the After HTML.',
+  'The selector line describes where the element lives in the rendered DOM, as a hint for finding it in the source.',
   'Keep everything else unchanged and preserve the original formatting and indentation.',
 ].join('\n');
 
 const activeKey = (tabId) => `active_${tabId}`;
 const sectionsKey = (tabId) => `sections_${tabId}`;
+const PENDING_KEY = 'pending_report';
 
 async function isActive(tabId) {
   const data = await chrome.storage.session.get(activeKey(tabId));
@@ -36,9 +38,10 @@ function buildReport(promptPrefix, sections, fallbackUrl) {
   }
   for (const section of withEdits) {
     parts.push('---', '', `url: ${section.url}`);
-    for (const { before, after } of section.edits) {
+    for (const { selector, before, after } of section.edits) {
+      parts.push('');
+      if (selector) parts.push(`selector: ${selector}`, '');
       parts.push(
-        '',
         'Before:',
         '',
         '```',
@@ -57,8 +60,34 @@ function buildReport(promptPrefix, sections, fallbackUrl) {
   return parts.join('\n').trimEnd() + '\n';
 }
 
-// Runs in the page: copy the report to the clipboard.
-function copyReport(report) {
+// Runs in the page: copy the report to the clipboard and show a toast.
+function copyReportAndToast(report, message) {
+  const showToast = (text) => {
+    const toast = document.createElement('div');
+    toast.textContent = text;
+    Object.assign(toast.style, {
+      position: 'fixed',
+      right: '20px',
+      bottom: '20px',
+      zIndex: '2147483647',
+      background: '#001E35',
+      color: '#fff',
+      borderLeft: '4px solid #FBB734',
+      borderRadius: '10px',
+      padding: '12px 18px',
+      font: '600 14px/1.4 "Open Sans", -apple-system, "Segoe UI", sans-serif',
+      boxShadow: '0 6px 24px rgba(0, 30, 53, 0.35)',
+      opacity: '0',
+      transition: 'opacity 0.25s',
+    });
+    document.documentElement.appendChild(toast);
+    requestAnimationFrame(() => (toast.style.opacity = '1'));
+    setTimeout(() => {
+      toast.style.opacity = '0';
+      setTimeout(() => toast.remove(), 300);
+    }, 2500);
+  };
+
   const copyViaTextarea = () => {
     const ta = document.createElement('textarea');
     ta.value = report;
@@ -71,10 +100,28 @@ function copyReport(report) {
     ta.remove();
     return ok;
   };
+
   return navigator.clipboard
     .writeText(report)
     .then(() => true)
-    .catch(() => copyViaTextarea());
+    .catch(() => copyViaTextarea())
+    .then((ok) => {
+      if (ok) showToast(message);
+      return ok;
+    });
+}
+
+async function copyInTab(tabId, report, message) {
+  try {
+    const [{ result }] = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: copyReportAndToast,
+      args: [report, message],
+    });
+    return Boolean(result);
+  } catch (e) {
+    return false;
+  }
 }
 
 async function setBadge(tabId, text, color) {
@@ -82,17 +129,41 @@ async function setBadge(tabId, text, color) {
   await chrome.action.setBadgeText({ tabId, text });
 }
 
+function flashBadge(tabId, text, color) {
+  setBadge(tabId, text, color);
+  setTimeout(() => chrome.action.setBadgeText({ tabId, text: '' }), 2500);
+}
+
 chrome.action.onClicked.addListener(async (tab) => {
   if (!tab.id) return;
   const tabId = tab.id;
 
   if (!(await isActive(tabId))) {
+    // A report that couldn't be copied earlier (e.g. edit mode was ended on
+    // a chrome:// page) takes priority: copy it now instead of starting a
+    // new edit session.
+    const { [PENDING_KEY]: pending } = await chrome.storage.session.get(PENDING_KEY);
+    if (pending) {
+      const copied = await copyInTab(
+        tabId,
+        pending.report,
+        `Saved report copied — ${pending.count} edit${pending.count === 1 ? '' : 's'}`
+      );
+      if (copied) {
+        await chrome.storage.session.remove(PENDING_KEY);
+        flashBadge(tabId, `${pending.count}`, '#195FA4');
+      } else {
+        flashBadge(tabId, '✗', '#C2410C');
+      }
+      return;
+    }
+
     // ── Edit mode ON ───────────────────────────────────────────────
     try {
       await chrome.scripting.executeScript({ target: { tabId }, files: ['content.js'] });
     } catch (e) {
       // Pages that disallow injection (chrome://, web store, etc.)
-      await setBadge(tabId, '✗', '#C2410C');
+      flashBadge(tabId, '✗', '#C2410C');
       return;
     }
     await chrome.storage.session.set({
@@ -120,20 +191,19 @@ chrome.action.onClicked.addListener(async (tab) => {
   const report = buildReport(prompt, sections, tab.url || '');
   const editCount = sections.reduce((n, s) => n + s.edits.length, 0);
 
-  let copied = false;
-  try {
-    const [{ result }] = await chrome.scripting.executeScript({
-      target: { tabId },
-      func: copyReport,
-      args: [report],
-    });
-    copied = Boolean(result);
-  } catch (e) {
-    copied = false;
-  }
+  const copied = await copyInTab(
+    tabId,
+    report,
+    `Report copied — ${editCount} edit${editCount === 1 ? '' : 's'}`
+  );
 
-  await setBadge(tabId, copied ? `${editCount}` : '✗', copied ? '#195FA4' : '#C2410C');
-  setTimeout(() => chrome.action.setBadgeText({ tabId, text: '' }), 2500);
+  if (copied) {
+    flashBadge(tabId, `${editCount}`, '#195FA4');
+  } else {
+    // Keep the report; the next icon click copies it from any normal page.
+    await chrome.storage.session.set({ [PENDING_KEY]: { report, count: editCount } });
+    flashBadge(tabId, '💾', '#C2410C');
+  }
 });
 
 // Keep edit mode alive across navigations and reloads: re-inject the content

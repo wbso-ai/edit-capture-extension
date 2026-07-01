@@ -1,6 +1,7 @@
 const DEFAULT_PROMPT = [
   'Apply the edits below to the source file referenced by the url.',
   'For each Before/After pair: locate the Before HTML in the file and replace it with the After HTML.',
+  'The selector line describes where the element lives in the rendered DOM, as a hint for finding it in the source.',
   'Keep everything else unchanged and preserve the original formatting and indentation.',
 ].join('\n');
 

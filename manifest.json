@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Edit & Capture",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Click to make any page editable; click again to copy a before/after report of your edits (with a configurable prompt) to the clipboard. Survives navigation and reloads.",
   "author": "jankees@wbso.ai",
   "permissions": ["activeTab", "scripting", "clipboardWrite", "storage"],
@@ -18,6 +18,15 @@
   },
   "background": {
     "service_worker": "background.js"
+  },
+  "commands": {
+    "_execute_action": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+E",
+        "mac": "Command+Shift+E"
+      },
+      "description": "Toggle edit mode"
+    }
   },
   "action": {
     "default_title": "Edit & Capture: toggle edit mode",
