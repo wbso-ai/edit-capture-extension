@@ -8,6 +8,24 @@ const DEFAULT_PROMPT = [
 const activeKey = (tabId) => `active_${tabId}`;
 const sectionsKey = (tabId) => `sections_${tabId}`;
 const PENDING_KEY = 'pending_report';
+const HISTORY_KEY = 'history';
+const HISTORY_MAX = 20;
+
+async function saveHistory(report, count, sections) {
+  const { [HISTORY_KEY]: history = [] } = await chrome.storage.local.get(HISTORY_KEY);
+  history.unshift({
+    ts: Date.now(),
+    count,
+    urls: [...new Set(sections.map((s) => s.url))],
+    report,
+    sections, // structured copy, so a later session can resume/combine
+  });
+  // ponytail: raw sections are bulky; keep them on the 5 newest entries only
+  const trimmed = history
+    .slice(0, HISTORY_MAX)
+    .map((h, i) => (i > 4 ? { ...h, sections: undefined } : h));
+  await chrome.storage.local.set({ [HISTORY_KEY]: trimmed });
+}
 
 async function isActive(tabId) {
   const data = await chrome.storage.session.get(activeKey(tabId));
@@ -19,11 +37,14 @@ async function getSections(tabId) {
   return data[sectionsKey(tabId)] || [];
 }
 
-// Insert or replace the edits for one page visit.
-function upsertSection(sections, { visitId, url, edits }) {
-  const i = sections.findIndex((s) => s.visitId === visitId);
-  if (i >= 0) sections[i] = { visitId, url, edits };
-  else sections.push({ visitId, url, edits });
+// Sections are keyed by URL (hash ignored): one section per page, always.
+const normUrl = (u) => (u || '').split('#')[0];
+
+// Insert or replace the edits for one page.
+function upsertSection(sections, { url, edits }) {
+  const i = sections.findIndex((s) => normUrl(s.url) === normUrl(url));
+  if (i >= 0) sections[i] = { url: sections[i].url, edits };
+  else sections.push({ url, edits });
 }
 
 function buildReport(promptPrefix, sections, fallbackUrl) {
@@ -171,6 +192,14 @@ chrome.action.onClicked.addListener(async (tab) => {
       [sectionsKey(tabId)]: [],
     });
     await setBadge(tabId, 'REC', '#DC2626');
+
+    // Offer to combine this session with the last copied report.
+    const { [HISTORY_KEY]: history = [] } = await chrome.storage.local.get(HISTORY_KEY);
+    if (history[0]?.sections?.length) {
+      try {
+        await chrome.tabs.sendMessage(tabId, { type: 'offerResume', count: history[0].count });
+      } catch (e) {}
+    }
     return;
   }
 
@@ -187,24 +216,26 @@ chrome.action.onClicked.addListener(async (tab) => {
 
   await chrome.storage.session.remove([activeKey(tabId), sectionsKey(tabId)]);
 
+  const withEdits = sections.filter((s) => s.edits.length > 0);
+  await finalizeReport(tabId, withEdits, tab.url || '');
+});
+
+// Build the final report, save it to history, copy it in the tab.
+async function finalizeReport(tabId, sections, fallbackUrl) {
   const { prompt } = await chrome.storage.sync.get({ prompt: DEFAULT_PROMPT });
-  const report = buildReport(prompt, sections, tab.url || '');
-  const editCount = sections.reduce((n, s) => n + s.edits.length, 0);
+  const report = buildReport(prompt, sections, fallbackUrl);
+  const count = sections.reduce((n, s) => n + s.edits.length, 0);
+  if (count > 0) await saveHistory(report, count, sections);
 
-  const copied = await copyInTab(
-    tabId,
-    report,
-    `Report copied — ${editCount} edit${editCount === 1 ? '' : 's'}`
-  );
-
+  const copied = await copyInTab(tabId, report, `Report copied — ${count} edit${count === 1 ? '' : 's'}`);
   if (copied) {
-    flashBadge(tabId, `${editCount}`, '#195FA4');
+    flashBadge(tabId, `${count}`, '#195FA4');
   } else {
     // Keep the report; the next icon click copies it from any normal page.
-    await chrome.storage.session.set({ [PENDING_KEY]: { report, count: editCount } });
+    await chrome.storage.session.set({ [PENDING_KEY]: { report, count } });
     flashBadge(tabId, '💾', '#C2410C');
   }
-});
+}
 
 // Keep edit mode alive across navigations and reloads: re-inject the content
 // script whenever an active tab finishes loading a page.
@@ -219,16 +250,54 @@ chrome.tabs.onUpdated.addListener(async (tabId, info) => {
   }
 });
 
-// Receive (debounced) edit snapshots from the content script.
-chrome.runtime.onMessage.addListener((msg, sender) => {
-  if (msg.type !== 'sync' || !sender.tab?.id) return;
-  const tabId = sender.tab.id;
-  (async () => {
-    if (!(await isActive(tabId))) return;
-    const sections = await getSections(tabId);
-    upsertSection(sections, msg);
-    await chrome.storage.session.set({ [sectionsKey(tabId)]: sections });
-  })();
+// Receive (debounced) edit snapshots from the content script, and the
+// confirm/cancel answers from the preview panel.
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  const tabId = sender.tab?.id;
+  if (!tabId) return;
+
+  if (msg.type === 'getSections') {
+    // The in-page edits panel shows past pages' edits too.
+    getSections(tabId).then(sendResponse);
+    return true;
+  }
+
+  if (msg.type === 'resume') {
+    // Seed this session with the sections of the last copied report.
+    (async () => {
+      if (!(await isActive(tabId))) return sendResponse(false);
+      const { [HISTORY_KEY]: history = [] } = await chrome.storage.local.get(HISTORY_KEY);
+      const sections = history[0]?.sections;
+      if (!sections?.length) return sendResponse(false);
+      await chrome.storage.session.set({ [sectionsKey(tabId)]: sections });
+      sendResponse(true);
+    })();
+    return true;
+  }
+
+  if (msg.type === 'removeEdit') {
+    // ✕ in the panel on another page's edit.
+    (async () => {
+      const sections = await getSections(tabId);
+      for (const s of sections) {
+        if (normUrl(s.url) !== normUrl(msg.url)) continue;
+        s.edits = s.edits.filter((e) => !(e.selector === msg.selector && e.before === msg.before));
+      }
+      const kept = sections.filter((s) => s.edits.length > 0);
+      await chrome.storage.session.set({ [sectionsKey(tabId)]: kept });
+      sendResponse(true);
+    })();
+    return true;
+  }
+
+  if (msg.type === 'sync') {
+    (async () => {
+      if (!(await isActive(tabId))) return;
+      const sections = await getSections(tabId);
+      upsertSection(sections, msg);
+      await chrome.storage.session.set({ [sectionsKey(tabId)]: sections });
+    })();
+  }
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => {

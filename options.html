@@ -87,6 +87,31 @@
     button.secondary:hover { background: var(--wbso-bg); }
     #status { color: #0E8A66; font-size: 13px; font-weight: 600; }
     .gold-bar { height: 4px; background: var(--wbso-gold); }
+    .divider { height: 1px; background: #E2E8F0; margin: 28px 0; }
+    .entry {
+      display: flex;
+      gap: 10px;
+      align-items: flex-start;
+      border: 1px solid #E2E8F0;
+      border-radius: 10px;
+      margin-bottom: 10px;
+      padding: 10px 14px;
+    }
+    .entry input[type="checkbox"] { margin-top: 4px; accent-color: var(--wbso-blue); }
+    .entry details { flex: 1; min-width: 0; }
+    .entry summary { cursor: pointer; font-size: 13px; font-weight: 600; }
+    .entry pre {
+      margin: 10px 0 0;
+      padding: 12px;
+      background: #F8FAFC;
+      border-radius: 8px;
+      font-size: 12px;
+      overflow: auto;
+      max-height: 280px;
+    }
+    .entry-actions { display: flex; gap: 8px; margin-top: 10px; }
+    .entry-actions button, .history-actions button { padding: 6px 14px; font-size: 12px; }
+    .history-actions { margin-top: 4px; display: flex; align-items: center; gap: 8px; }
   </style>
 </head>
 <body>
@@ -110,6 +135,20 @@
         <button id="save">Save</button>
         <button id="reset" class="secondary">Reset to default</button>
         <span id="status"></span>
+      </div>
+
+      <div class="divider"></div>
+
+      <label>Recent reports</label>
+      <p class="hint">
+        The last 20 copied reports. Tick several and use “Copy combined” to
+        merge multi-page or multi-tab edits into one report.
+      </p>
+      <div id="history"></div>
+      <div class="history-actions">
+        <button id="copyCombined">Copy combined</button>
+        <button id="clearHistory" class="secondary">Clear history</button>
+        <span id="historyStatus"></span>
       </div>
     </main>
   </div>

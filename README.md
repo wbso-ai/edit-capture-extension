@@ -43,7 +43,25 @@ replace it with. No ambiguity, no back-and-forth.
 - 🧭 **Survives navigation and reloads** — edits are synced to the background
   worker; navigate (full loads *and* SPA/pushState) or reload and keep editing
 - 📝 **Form fields too** — changes to `<input>`, `<textarea>`, and `<select>`
-  values are captured with the value baked into the HTML
+  values are captured with the value baked into the HTML (incl. checkbox and
+  radio state)
+- 🖱 **Forms are editable too** — button labels and `<label>` text edit like
+  any text (⌘/Ctrl-click a button to actually press it); typing in an empty
+  field with a placeholder edits the placeholder itself; selects, checkboxes,
+  details, and media controls stay interactive (⌥-click a `<summary>` to edit
+  its text)
+- 🔁 **Edits re-apply on return** — revisit a page you edited during the
+  session and your changes are applied to it again and stay editable
+- ➕ **Combine sessions** — starting a new session offers to load the edits
+  of your last copied report, so you can keep building on them
+- 🔗 **Safe links** — link clicks never navigate while editing; hovering a
+  link shows an inline URL editor plus a ↗ button (or ⌘/Ctrl-click) to
+  deliberately follow the link while the edit session continues
+- ↩️ **Undo per edit** — a floating chip shows the live edit count; open it
+  to undo edits on this page (↩︎) or drop edits from other pages (✕) without
+  losing the rest — ending edit mode copies the report right away
+- 🗂 **Report history** — the last 20 reports are kept on the settings page;
+  view, copy, delete, or combine several into one multi-page report
 - 🔔 **On-page toast** — a confirmation appears when the report is copied
 - 💾 **Never loses a report** — if copying fails (e.g. you ended edit mode on
   a `chrome://` page), the report is kept and copied on your next click
