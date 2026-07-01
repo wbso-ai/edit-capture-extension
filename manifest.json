@@ -1,0 +1,31 @@
+{
+  "manifest_version": 3,
+  "name": "Edit & Capture",
+  "version": "1.1.0",
+  "description": "Click to make any page editable; click again to copy a before/after report of your edits (with a configurable prompt) to the clipboard. Survives navigation and reloads.",
+  "author": "jankees@wbso.ai",
+  "permissions": ["activeTab", "scripting", "clipboardWrite", "storage"],
+  "host_permissions": ["<all_urls>"],
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "Edit & Capture: toggle edit mode",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  }
+}
