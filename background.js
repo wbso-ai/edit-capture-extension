@@ -1,6 +1,7 @@
 const DEFAULT_PROMPT = [
   'Apply the edits below to the source file referenced by the url.',
   'For each Before/After pair: locate the Before HTML in the file and replace it with the After HTML.',
+  'For each Element/Instruction pair: locate the element in the source and carry out the instruction on it.',
   'The selector line describes where the element lives in the rendered DOM, as a hint for finding it in the source.',
   'Keep everything else unchanged and preserve the original formatting and indentation.',
 ].join('\n');
@@ -11,13 +12,14 @@ const PENDING_KEY = 'pending_report';
 const HISTORY_KEY = 'history';
 const HISTORY_MAX = 20;
 
-async function saveHistory(report, count, sections) {
+async function saveHistory(report, count, sections, ignored = false) {
   const { [HISTORY_KEY]: history = [] } = await chrome.storage.local.get(HISTORY_KEY);
   history.unshift({
     ts: Date.now(),
     count,
     urls: [...new Set(sections.map((s) => s.url))],
     report,
+    ignored,
   });
   await chrome.storage.local.set({ [HISTORY_KEY]: history.slice(0, HISTORY_MAX) });
 }
@@ -35,12 +37,14 @@ async function getSections(tabId) {
 // Sections are keyed by URL (hash ignored): one section per page, always.
 const normUrl = (u) => (u || '').split('#')[0];
 
-// Insert or replace the edits for one page.
-function upsertSection(sections, { url, edits }) {
+// Insert or replace the edits + notes for one page.
+function upsertSection(sections, { url, edits, notes }) {
   const i = sections.findIndex((s) => normUrl(s.url) === normUrl(url));
-  if (i >= 0) sections[i] = { url: sections[i].url, edits };
-  else sections.push({ url, edits });
+  if (i >= 0) sections[i] = { url: sections[i].url, edits, notes: notes || [] };
+  else sections.push({ url, edits, notes: notes || [] });
 }
+
+const sectionSize = (s) => s.edits.length + (s.notes?.length || 0);
 
 function buildReport(promptPrefix, sections, fallbackUrl) {
   const parts = [];
@@ -48,11 +52,11 @@ function buildReport(promptPrefix, sections, fallbackUrl) {
     parts.push(promptPrefix.trim(), '');
   }
 
-  const withEdits = sections.filter((s) => s.edits.length > 0);
-  if (withEdits.length === 0) {
+  const withContent = sections.filter((s) => sectionSize(s) > 0);
+  if (withContent.length === 0) {
     parts.push('---', '', `url: ${fallbackUrl}`, '', '(no changes detected)');
   }
-  for (const section of withEdits) {
+  for (const section of withContent) {
     parts.push('---', '', `url: ${section.url}`);
     for (const { selector, before, after } of section.edits) {
       parts.push('');
@@ -70,6 +74,11 @@ function buildReport(promptPrefix, sections, fallbackUrl) {
         after,
         '```'
       );
+    }
+    for (const note of section.notes || []) {
+      parts.push('');
+      if (note.selector) parts.push(`selector: ${note.selector}`, '');
+      parts.push('Element:', '', '```', note.html || '(see selector)', '```', '', `Instruction: ${note.prompt}`);
     }
     parts.push('');
   }
@@ -203,8 +212,8 @@ chrome.action.onClicked.addListener(async (tab) => {
 
   await chrome.storage.session.remove([activeKey(tabId), sectionsKey(tabId)]);
 
-  const withEdits = sections.filter((s) => s.edits.length > 0);
-  await finalizeReport(tabId, withEdits, tab.url || '');
+  const withContent = sections.filter((s) => sectionSize(s) > 0);
+  await finalizeReport(tabId, withContent, tab.url || '');
 });
 
 // POST the report to the configured webhook (e.g. the MCP bridge).
@@ -228,7 +237,7 @@ async function postWebhook(report, count, sections) {
 async function finalizeReport(tabId, sections, fallbackUrl) {
   const { prompt } = await chrome.storage.sync.get({ prompt: DEFAULT_PROMPT });
   const report = buildReport(prompt, sections, fallbackUrl);
-  const count = sections.reduce((n, s) => n + s.edits.length, 0);
+  const count = sections.reduce((n, s) => n + sectionSize(s), 0);
   let sent = null;
   if (count > 0) {
     await saveHistory(report, count, sections);
@@ -277,15 +286,38 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 
+  if (msg.type === 'discard') {
+    // User threw the whole session away (✕ / double-Esc): nothing is copied
+    // or sent, but the report is kept in history marked as ignored.
+    (async () => {
+      const sections = await getSections(tabId);
+      await chrome.storage.session.remove([activeKey(tabId), sectionsKey(tabId)]);
+      chrome.action.setBadgeText({ tabId, text: '' });
+      const withContent = sections.filter((s) => sectionSize(s) > 0);
+      if (!withContent.length) return;
+      const { prompt } = await chrome.storage.sync.get({ prompt: DEFAULT_PROMPT });
+      const report = buildReport(prompt, withContent, sender.tab?.url || '');
+      const count = withContent.reduce((n, s) => n + sectionSize(s), 0);
+      await saveHistory(report, count, withContent, true);
+    })();
+    return;
+  }
+
   if (msg.type === 'removeEdit') {
     // ✕ in the panel on another page's edit.
     (async () => {
       const sections = await getSections(tabId);
       for (const s of sections) {
         if (normUrl(s.url) !== normUrl(msg.url)) continue;
-        s.edits = s.edits.filter((e) => !(e.selector === msg.selector && e.before === msg.before));
+        if (msg.noteMode) {
+          s.notes = (s.notes || []).filter(
+            (n) => !(n.selector === msg.selector && n.prompt === msg.prompt)
+          );
+        } else {
+          s.edits = s.edits.filter((e) => !(e.selector === msg.selector && e.before === msg.before));
+        }
       }
-      const kept = sections.filter((s) => s.edits.length > 0);
+      const kept = sections.filter((s) => sectionSize(s) > 0);
       await chrome.storage.session.set({ [sectionsKey(tabId)]: kept });
       sendResponse(true);
     })();

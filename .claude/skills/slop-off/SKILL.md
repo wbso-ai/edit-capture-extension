@@ -30,8 +30,8 @@ Verwerk rapporten van de `slop-off` MCP server en pas ze toe op de bron.
 
 ## Edits toepassen
 
-Het rapport bevat per URL secties met Before/After HTML-paren en een
-CSS-selector als hint.
+Het rapport bevat per URL secties met Before/After HTML-paren en/of
+Element/Instruction-paren, elk met een CSS-selector als hint.
 
 1. Zoek per edit het bronbestand dat die pagina/HTML rendert: zoek op
    onderscheidende tekst uit het Before-blok (letterlijke strings eerst,
@@ -43,6 +43,10 @@ CSS-selector als hint.
    stil gokken of overslaan. Ga daarna gewoon door met de lus.
 4. Placeholder-, href- en andere attribuutwijzigingen zijn attribuut-edits;
    pas alleen dat attribuut aan.
+5. Element/Instruction-paren zijn annotaties: zoek het element (selector +
+   Element-snippet) en voer de instructie uit op dat element in de bron.
+   Dit zijn vrije opdrachten ("maak dit korter", "andere kleur") — voer ze
+   uit naar beste inzicht en meld wat je hebt gedaan.
 
 ## Per verwerkt rapport
 

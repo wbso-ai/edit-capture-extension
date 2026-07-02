@@ -62,8 +62,19 @@ replace it with. No ambiguity, no back-and-forth.
   state, an in-page word diff (red strikethrough / green), and your edited
   version; Original and Diff behave like a normal read-only page, New
   returns to editing
+- 💬 **Element annotations** — hold ⌃ to preview which element you'd pick,
+  ⌃-click it and type an instruction in the terminal-style prompt (saved
+  live); a small 💬 marker stays on the element — hover it to highlight the
+  element and read the prompt, click it to edit, 🗑 to remove; Tab cycles
+  through your annotations (Shift+Tab backwards) instead of the page's own
+  tab order. Annotations land in the report as Element + Instruction pairs
+  for your agent
 - 🗂 **Report history** — the last 20 reports are kept on the settings page;
   view, copy, delete, or combine several into one multi-page report
+- 🧹 **Discard a session** — the ✕ next to the edits chip (or a fast
+  double-Esc) reverts the page and throws the session away, with a
+  confirmation when there are changes or notes; the report is still kept in
+  history, marked as ignored
 - 🔔 **On-page toast** — a confirmation appears when the report is copied
 - 💾 **Never loses a report** — if copying fails (e.g. you ended edit mode on
   a `chrome://` page), the report is kept and copied on your next click

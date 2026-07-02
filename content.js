@@ -133,6 +133,7 @@
   };
 
   const sync = () => {
+    if (!active) return; // disable() teardown must never resurrect cleared sections
     renderPanel();
     if (adopting) {
       syncWanted = true;
@@ -143,6 +144,7 @@
         type: 'sync',
         url: currentUrl,
         edits: snapshot(),
+        notes: noteList(),
       });
     } catch (e) {
       // Extension context gone (e.g. reloaded); nothing we can do.
@@ -163,6 +165,7 @@
     if (active) document.designMode = 'on';
     tracked = new Map();
     carried = [];
+    clearNotes();
     reapplyTimers.forEach(clearTimeout);
     reapplyTimers = [];
     renderPanel();
@@ -212,7 +215,9 @@
         void chrome.runtime.lastError;
         try {
           if (!active || !Array.isArray(sections)) return;
-          const section = sections.filter((s) => normUrl(s.url) === adoptedUrl && s.edits.length > 0).pop();
+          const section = sections
+            .filter((s) => normUrl(s.url) === adoptedUrl && (s.edits.length > 0 || s.notes?.length > 0))
+            .pop();
           if (!section) return;
           let pending = section.edits.slice();
           const attempt = () => {
@@ -221,6 +226,19 @@
             const trackedSelectors = new Set([...tracked.values()].map((r) => r.selector));
             pending = pending.filter((edit) => !trackedSelectors.has(edit.selector) && !reattach(edit));
             carried = pending;
+            // Notes: re-attach to their element when it exists, else carry.
+            const attached = new Set([...notes.values()].map((n) => n.selector));
+            carriedNotes = (section.notes || []).filter((n) => {
+              if (attached.has(n.selector)) return false;
+              let el = null;
+              try {
+                el = document.querySelector(n.selector);
+              } catch (err) {}
+              if (!el) return true;
+              notes.set(el, { selector: n.selector, prompt: n.prompt, html: n.html });
+              return false;
+            });
+            syncMarkers();
             sync();
           };
           attempt();
@@ -309,6 +327,13 @@
     document.addEventListener('focusout', onFocusOut, true);
     window.addEventListener('pagehide', onPageHide);
     document.addEventListener('visibilitychange', onVisibilityChange);
+    document.addEventListener('contextmenu', onAnnotate, true);
+    document.addEventListener('click', onAnnotate, true);
+    document.addEventListener('mousemove', onAnnotateMove, true);
+    document.addEventListener('keydown', onAnnotateKey, true);
+    document.addEventListener('keyup', onAnnotateKey, true);
+    document.addEventListener('keydown', onTabCycle, true);
+    document.addEventListener('keydown', onEscDiscard, true);
     document.addEventListener('click', onControlAltClick, true);
     document.addEventListener('click', onLinkClick, true);
     document.addEventListener('auxclick', onLinkClick, true);
@@ -323,6 +348,7 @@
       addModeStyle();
       if (linkUi && !linkUi.isConnected) hideLinkUi();
       positionLinkUi(); // follow the element while scrolling
+      syncMarkers(); // note markers follow their elements too
       if (panelEl && !panelEl.isConnected) {
         removePanel();
         renderPanel();
@@ -362,7 +388,8 @@
     e.stopPropagation();
     // Deliberate navigation: same-tab full load, so the background worker
     // re-injects us and the edit session continues on the next page.
-    if (e.type === 'click' && (e.metaKey || e.ctrlKey)) {
+    // ⌘-only: ⌃-click is the annotate gesture.
+    if (e.type === 'click' && e.metaKey) {
       if (a.href) {
         clearTimeout(syncTimer);
         sync(); // flush before we leave
@@ -372,7 +399,7 @@
     }
     if (!linkHintShown) {
       linkHintShown = true;
-      miniToast('Link clicks are off in edit mode — ⌘/Ctrl-click follows, hover to edit URL');
+      miniToast('Link clicks are off in edit mode — ⌘-click follows, hover to edit URL');
     }
   };
 
@@ -513,6 +540,356 @@
   };
 
 
+  // ── Element annotations: ⌃-click an element, attach an instruction ──
+  // Saved notes show as a small 💬 marker on the element's corner; hovering
+  // it highlights the element and shows the prompt, clicking it re-opens the
+  // editor. Notes travel with the report as selector + snippet + instruction.
+  let notes = new Map(); // element -> { selector, prompt, html }
+  let carriedNotes = []; // notes from an earlier visit whose element isn't found (yet)
+  let noteMarkers = new Map(); // element -> marker node
+  let noteEditor = null;
+  let noteTarget = null;
+  let noteHl = null;
+  let noteBubble = null;
+
+  const snippetOf = (el) => {
+    const html = htmlOf(el);
+    // ponytail: head-truncate big elements; selector + snippet is enough context
+    return html.length > 1500 ? html.slice(0, 1500) + ' …' : html;
+  };
+
+  const noteList = () => {
+    const out = carriedNotes.slice();
+    for (const [, n] of notes) out.push({ selector: n.selector, prompt: n.prompt, html: n.html });
+    return out;
+  };
+
+  const highlightNoteEl = (el) => {
+    unhighlightNoteEl();
+    if (!el?.isConnected) return;
+    noteHl = { el, outline: el.style.outline, offset: el.style.outlineOffset };
+    el.style.outline = '3px solid #FBB734';
+    el.style.outlineOffset = '2px';
+  };
+  const unhighlightNoteEl = () => {
+    if (!noteHl) return;
+    noteHl.el.style.outline = noteHl.outline;
+    noteHl.el.style.outlineOffset = noteHl.offset;
+    noteHl = null;
+  };
+
+  const hideNoteBubble = () => {
+    noteBubble?.remove();
+    noteBubble = null;
+  };
+  const showNoteBubble = (marker, prompt) => {
+    hideNoteBubble();
+    noteBubble = document.createElement('slop-off-ui');
+    noteBubble.setAttribute('data-ec-ui', '');
+    noteBubble.textContent = prompt.length > 200 ? prompt.slice(0, 200) + '…' : prompt;
+    const r = marker.getBoundingClientRect();
+    noteBubble.style.cssText =
+      'position:fixed;z-index:2147483647;display:block;max-width:280px;background:#001E35;color:#fff;' +
+      'border-radius:8px;padding:8px 10px;font:12px/1.5 -apple-system,"Segoe UI",sans-serif;' +
+      `box-shadow:0 6px 24px rgba(0,30,53,.35);left:${Math.max(4, Math.min(r.left, innerWidth - 300))}px;` +
+      `top:${r.bottom + 6}px;`;
+    (document.body || document.documentElement).appendChild(noteBubble);
+  };
+
+  const positionMarker = (el, marker) => {
+    if (!el.isConnected) {
+      marker.style.display = 'none';
+      return;
+    }
+    const r = el.getBoundingClientRect();
+    if (!r.width && !r.height) {
+      marker.style.display = 'none';
+      return;
+    }
+    marker.style.display = 'flex';
+    marker.style.left = `${Math.max(2, Math.min(r.right - 10, innerWidth - 24))}px`;
+    marker.style.top = `${Math.max(2, r.top - 10)}px`;
+  };
+
+  const createMarker = (el) => {
+    const m = document.createElement('slop-off-ui');
+    m.setAttribute('data-ec-ui', '');
+    m.contentEditable = 'false';
+    m.textContent = '💬';
+    m.style.cssText =
+      'position:fixed;z-index:2147483647;width:22px;height:22px;border-radius:50%;background:#FBB734;' +
+      'display:flex;align-items:center;justify-content:center;font-size:12px;cursor:pointer;' +
+      'box-shadow:0 2px 8px rgba(0,30,53,.35);user-select:none;';
+    m.addEventListener('mouseenter', () => {
+      highlightNoteEl(el);
+      const n = notes.get(el);
+      if (n) showNoteBubble(m, n.prompt);
+    });
+    m.addEventListener('mouseleave', () => {
+      unhighlightNoteEl();
+      hideNoteBubble();
+    });
+    for (const type of ['mousedown', 'mouseup', 'auxclick']) {
+      m.addEventListener(type, (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+      });
+    }
+    m.addEventListener('click', (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      openNoteEditor(el);
+    });
+    (document.body || document.documentElement).appendChild(m);
+    return m;
+  };
+
+  const syncMarkers = () => {
+    for (const [el, marker] of noteMarkers) {
+      if (!notes.has(el)) {
+        marker.remove();
+        noteMarkers.delete(el);
+      }
+    }
+    for (const [el] of notes) {
+      if (!noteMarkers.has(el)) noteMarkers.set(el, createMarker(el));
+      positionMarker(el, noteMarkers.get(el));
+    }
+  };
+
+  const onOutsideNote = (e) => {
+    if (noteEditor && !noteEditor.contains(e.target)) closeNoteEditor();
+  };
+
+  const closeNoteEditor = () => {
+    document.removeEventListener('mousedown', onOutsideNote, true);
+    noteEditor?.remove();
+    noteEditor = null;
+    noteTarget = null;
+    unhighlightNoteEl();
+    clearTimeout(syncTimer);
+    sync();
+  };
+
+  // Live save: everything typed is stored right away (debounced sync).
+  const liveSaveNote = (value) => {
+    const el = noteTarget;
+    if (!el) return;
+    const v = value.trim();
+    if (!v) notes.delete(el);
+    else notes.set(el, { selector: cssPath(el), prompt: v, html: notes.get(el)?.html || snippetOf(el) });
+    syncMarkers();
+    clearTimeout(syncTimer);
+    syncTimer = setTimeout(sync, 300);
+  };
+
+  const deleteNote = () => {
+    const el = noteTarget;
+    if (el) notes.delete(el);
+    syncMarkers();
+    closeNoteEditor();
+  };
+
+  const openNoteEditor = (el) => {
+    closeNoteEditor();
+    hideNoteBubble();
+    noteTarget = el;
+    highlightNoteEl(el);
+    noteEditor = document.createElement('slop-off-ui');
+    noteEditor.setAttribute('data-ec-ui', '');
+    noteEditor.contentEditable = 'false';
+    const r = el.getBoundingClientRect();
+    // Terminal look: dark panel, mono font, ❯ prompt, gold caret.
+    noteEditor.style.cssText =
+      'position:fixed;z-index:2147483647;display:flex;flex-direction:column;gap:4px;width:340px;' +
+      'background:#0B1826;border:1px solid #1E3A5F;border-radius:10px;padding:10px 12px;' +
+      'box-shadow:0 8px 30px rgba(0,30,53,.45);' +
+      `left:${Math.max(4, Math.min(r.left, innerWidth - 360))}px;` +
+      `top:${Math.min(Math.max(4, r.bottom + 6), innerHeight - 150)}px;`;
+    for (const type of ['click', 'auxclick', 'mousedown', 'mouseup']) {
+      noteEditor.addEventListener(type, (e) => e.stopPropagation());
+    }
+    const promptRow = document.createElement('div');
+    promptRow.style.cssText = 'display:flex;gap:8px;align-items:flex-start;';
+    const chevron = document.createElement('span');
+    chevron.textContent = '❯';
+    chevron.style.cssText =
+      'color:#FBB734;font:700 13px/1.5 ui-monospace,Menlo,monospace;flex:none;user-select:none;';
+    const ta = document.createElement('textarea');
+    ta.value = notes.get(el)?.prompt || '';
+    ta.placeholder = 'instruction for this element…';
+    ta.rows = 3;
+    ta.style.cssText =
+      'flex:1;background:transparent;border:none;outline:none;resize:none;padding:0;margin:0;' +
+      'color:#E2E8F0;caret-color:#FBB734;font:13px/1.5 ui-monospace,Menlo,monospace;';
+    ta.addEventListener('input', () => liveSaveNote(ta.value));
+    ta.addEventListener('keydown', (e) => {
+      e.stopPropagation();
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        closeNoteEditor(); // already saved live
+      }
+      if (e.key === 'Escape') closeNoteEditor();
+      // Tab is handled by the document-level onTabCycle (capture phase).
+    });
+    promptRow.append(chevron, ta);
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;justify-content:flex-end;';
+    const del = document.createElement('button');
+    del.title = 'Remove note';
+    del.innerHTML =
+      '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
+      'stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+      '<path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>' +
+      '<path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>' +
+      '<path d="M10 11v6"/><path d="M14 11v6"/></svg>';
+    del.style.cssText =
+      'display:flex;align-items:center;justify-content:center;width:26px;height:26px;' +
+      'background:transparent;color:#64748B;border:none;border-radius:6px;cursor:pointer;padding:0;';
+    del.addEventListener('mouseenter', () => {
+      del.style.color = '#F87171';
+      del.style.background = 'rgba(248,113,113,.12)';
+    });
+    del.addEventListener('mouseleave', () => {
+      del.style.color = '#64748B';
+      del.style.background = 'transparent';
+    });
+    del.addEventListener('click', deleteNote);
+    row.appendChild(del);
+    noteEditor.append(promptRow, row);
+    (document.body || document.documentElement).appendChild(noteEditor);
+    ta.focus();
+    // Click anywhere outside closes (deferred so the opening click doesn't).
+    setTimeout(() => document.addEventListener('mousedown', onOutsideNote, true), 0);
+  };
+
+  // ⌃-click picks an element. macOS turns ⌃-click into a contextmenu event,
+  // other platforms fire a plain click — handle both.
+  const annotatable = (el) =>
+    el &&
+    el !== document.documentElement &&
+    el !== document.body &&
+    !(el.closest && el.closest('[data-ec-ui]'));
+
+  const onAnnotate = (e) => {
+    if (viewMode !== 'new' || !e.ctrlKey || e.metaKey || e.altKey) return;
+    if (!annotatable(e.target)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    clearAnnotateHover();
+    openNoteEditor(e.target);
+  };
+
+  // While ⌃ is held, preview which element a click would pick.
+  let annotateHover = null;
+  let lastMouseTarget = null;
+
+  const clearAnnotateHover = () => {
+    if (!annotateHover) return;
+    annotateHover.el.style.outline = annotateHover.outline;
+    annotateHover.el.style.outlineOffset = annotateHover.offset;
+    annotateHover = null;
+  };
+
+  const previewAnnotate = (el, ctrlDown) => {
+    if (!ctrlDown || viewMode !== 'new' || !annotatable(el)) return clearAnnotateHover();
+    if (annotateHover?.el === el) return;
+    clearAnnotateHover();
+    annotateHover = { el, outline: el.style.outline, offset: el.style.outlineOffset };
+    el.style.outline = '2px dashed #FBB734';
+    el.style.outlineOffset = '2px';
+  };
+
+  const onAnnotateMove = (e) => {
+    lastMouseTarget = e.target;
+    previewAnnotate(e.target, e.ctrlKey && !e.metaKey && !e.altKey);
+  };
+
+  const onAnnotateKey = (e) => {
+    if (e.key !== 'Control') return;
+    if (e.type === 'keyup') clearAnnotateHover();
+    else previewAnnotate(lastMouseTarget, true);
+  };
+
+  // Tab cycles through the annotated elements (Shift+Tab backwards) and
+  // opens each prompt; the page's own tab order is bypassed entirely.
+  const cycleNotes = (dir) => {
+    const els = [...notes.keys()].filter((el) => el.isConnected);
+    if (!els.length) return;
+    let i = els.indexOf(noteTarget);
+    i = i === -1 ? (dir > 0 ? 0 : els.length - 1) : (i + dir + els.length) % els.length;
+    const el = els[i];
+    el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    openNoteEditor(el);
+  };
+
+  const onTabCycle = (e) => {
+    if (!active || viewMode !== 'new' || e.key !== 'Tab') return;
+    e.preventDefault();
+    e.stopPropagation();
+    cycleNotes(e.shiftKey ? -1 : 1);
+  };
+
+  // ── Discard the session: ✕ next to the chip, or a fast double-Esc ───
+  const doDiscard = () => {
+    setView('new'); // make sure the DOM holds the edits, not a view
+    for (const [el, rec] of tracked) {
+      if (el.isConnected && afterOf(el, rec) !== rec.before) el.outerHTML = rec.before;
+    }
+    try {
+      chrome.runtime.sendMessage({ type: 'discard' });
+    } catch (e) {}
+    disable();
+  };
+
+  const discardSession = () => {
+    try {
+      chrome.runtime.sendMessage({ type: 'getSections' }, (sections) => {
+        void chrome.runtime.lastError;
+        const secs = Array.isArray(sections) ? sections : [];
+        const past = secs.filter((s) => normUrl(s.url) !== normUrl(currentUrl));
+        const total =
+          changedEntries().length +
+          carried.length +
+          notes.size +
+          carriedNotes.length +
+          past.reduce((n, s) => n + s.edits.length + (s.notes?.length || 0), 0);
+        if (
+          total > 0 &&
+          !window.confirm(`Discard ${total} change${total === 1 ? '' : 's'} from this session?`)
+        ) {
+          return;
+        }
+        doDiscard();
+      });
+    } catch (e) {
+      doDiscard();
+    }
+  };
+
+  let lastEsc = 0;
+  const onEscDiscard = (e) => {
+    if (!active || e.key !== 'Escape') return;
+    if (e.target.closest && e.target.closest('[data-ec-ui]')) return; // Esc in our editors just closes them
+    const now = Date.now();
+    if (now - lastEsc < 450) {
+      lastEsc = 0;
+      discardSession();
+    } else {
+      lastEsc = now;
+    }
+  };
+
+  const clearNotes = () => {
+    closeNoteEditor();
+    hideNoteBubble();
+    clearAnnotateHover();
+    noteMarkers.forEach((m) => m.remove());
+    noteMarkers = new Map();
+    notes = new Map();
+    carriedNotes = [];
+  };
+
   // ── Native controls: keep them working while editing ────────────────
   // designMode suppresses native activation (buttons don't click, selects
   // don't open, checkboxes don't toggle, details don't fold). Marking them
@@ -574,7 +951,8 @@
     if (!ctl) return;
     if (e.target.closest('[data-ec-ui]')) return;
     if (e.target.closest('input, select, textarea')) return; // a real control inside the label
-    if (ctl.tagName === 'BUTTON' && (e.metaKey || e.ctrlKey)) {
+    if (ctl.tagName === 'BUTTON' && e.metaKey) {
+      // ⌘-only: ⌃-click is the annotate gesture.
       e.preventDefault();
       e.stopPropagation();
       ctl.click(); // deliberate activation
@@ -664,7 +1042,20 @@
       b.addEventListener('click', () => setView(mode));
       viewBarEl.appendChild(b);
     }
-    panelEl.append(listEl, viewBarEl, chipEl);
+    const discardBtn = document.createElement('button');
+    discardBtn.textContent = '✕';
+    discardBtn.title = 'Discard all changes (double-Esc)';
+    discardBtn.style.cssText =
+      'background:#001E35;color:#94A3B8;border:none;border-radius:999px;width:30px;height:30px;' +
+      'cursor:pointer;font:600 13px/1 -apple-system,"Segoe UI",sans-serif;flex:none;' +
+      'box-shadow:0 4px 16px rgba(0,30,53,.3);';
+    discardBtn.addEventListener('mouseenter', () => (discardBtn.style.color = '#F87171'));
+    discardBtn.addEventListener('mouseleave', () => (discardBtn.style.color = '#94A3B8'));
+    discardBtn.addEventListener('click', discardSession);
+    const chipRow = document.createElement('div');
+    chipRow.style.cssText = 'display:flex;gap:8px;align-items:center;';
+    chipRow.append(chipEl, discardBtn);
+    panelEl.append(listEl, viewBarEl, chipRow);
     (document.body || document.documentElement).appendChild(panelEl);
   };
 
@@ -853,16 +1244,21 @@
   const paintPanel = (sections) => {
     if (!active || !panelEl) return;
     const entries = changedEntries();
-    const past = sections.filter((s) => normUrl(s.url) !== normUrl(currentUrl) && s.edits.length > 0);
+    const past = sections.filter(
+      (s) => normUrl(s.url) !== normUrl(currentUrl) && (s.edits.length > 0 || s.notes?.length > 0)
+    );
     const total = entries.length + carried.length + past.reduce((n, s) => n + s.edits.length, 0);
-    chipEl.textContent = `✏️ ${total} edit${total === 1 ? '' : 's'}`;
+    const noteTotal =
+      notes.size + carriedNotes.length + past.reduce((n, s) => n + (s.notes?.length || 0), 0);
+    chipEl.textContent =
+      `✏️ ${total} edit${total === 1 ? '' : 's'}` + (noteTotal ? ` · 💬 ${noteTotal}` : '');
     viewBarEl.style.display = entries.length ? 'flex' : 'none';
     for (const b of viewBarEl.children) {
       const on = b.dataset.mode === viewMode;
       b.style.background = on ? '#001E35' : 'transparent';
       b.style.color = on ? '#fff' : '#001E35';
     }
-    listEl.style.display = panelOpen && total ? 'block' : 'none';
+    listEl.style.display = panelOpen && (total || noteTotal) ? 'block' : 'none';
     listEl.textContent = '';
     if (!panelOpen) return;
 
@@ -909,6 +1305,19 @@
       if (onRemove) row.appendChild(rowBtn('✕', 'Drop this edit from the report', onRemove));
       listEl.appendChild(row);
     };
+    const addNoteRow = (n, onEdit, onRemove) => {
+      const row = document.createElement('div');
+      row.style.cssText =
+        'display:flex;gap:8px;align-items:flex-start;padding:8px 10px;border-bottom:1px solid #EEF2F7;';
+      const label = document.createElement('div');
+      label.style.cssText = 'flex:1;min-width:0;word-break:break-word;color:#334155;';
+      label.title = n.selector || '';
+      label.textContent = `💬 ${n.prompt.length > 120 ? n.prompt.slice(0, 120) + '…' : n.prompt}`;
+      row.appendChild(label);
+      if (onEdit) row.appendChild(rowBtn('✎', 'Edit this note', onEdit));
+      if (onRemove) row.appendChild(rowBtn('✕', 'Remove this note', onRemove));
+      listEl.appendChild(row);
+    };
 
     for (const s of past) {
       addHeader(s.url);
@@ -925,8 +1334,21 @@
           } catch (err) {}
         });
       }
+      for (const n of s.notes || []) {
+        addNoteRow(n, null, () => {
+          try {
+            chrome.runtime.sendMessage(
+              { type: 'removeEdit', url: s.url, selector: n.selector, prompt: n.prompt, noteMode: true },
+              () => {
+                void chrome.runtime.lastError;
+                renderPanel();
+              }
+            );
+          } catch (err) {}
+        });
+      }
     }
-    if (entries.length || carried.length) {
+    if (entries.length || carried.length || notes.size || carriedNotes.length) {
       addHeader(currentUrl, ' — this page');
       for (const e of carried) {
         addRow(e.before, e.after, e.selector, null, () => {
@@ -936,6 +1358,23 @@
       }
       for (const [el, rec] of entries) {
         addRow(rec.before, afterOf(el, rec), rec.selector, () => undoEdit(el), null);
+      }
+      for (const n of carriedNotes) {
+        addNoteRow(n, null, () => {
+          carriedNotes = carriedNotes.filter((x) => x !== n);
+          sync();
+        });
+      }
+      for (const [el, n] of notes) {
+        addNoteRow(
+          n,
+          () => openNoteEditor(el),
+          () => {
+            notes.delete(el);
+            syncMarkers();
+            sync();
+          }
+        );
       }
     }
   };
@@ -970,6 +1409,13 @@
     document.removeEventListener('focusin', onFocusIn, true);
     document.removeEventListener('focusout', onFocusOut, true);
     document.removeEventListener('visibilitychange', onVisibilityChange);
+    document.removeEventListener('contextmenu', onAnnotate, true);
+    document.removeEventListener('click', onAnnotate, true);
+    document.removeEventListener('mousemove', onAnnotateMove, true);
+    document.removeEventListener('keydown', onAnnotateKey, true);
+    document.removeEventListener('keyup', onAnnotateKey, true);
+    document.removeEventListener('keydown', onTabCycle, true);
+    document.removeEventListener('keydown', onEscDiscard, true);
     document.removeEventListener('click', onControlAltClick, true);
     document.removeEventListener('click', onLinkClick, true);
     document.removeEventListener('auxclick', onLinkClick, true);
@@ -982,6 +1428,7 @@
     hideBorder();
     removePanel();
     hideLinkUi();
+    clearNotes();
     reapplyTimers.forEach(clearTimeout);
     reapplyTimers = [];
     carried = [];
@@ -995,7 +1442,7 @@
       // so responding with it directly is both safe and correct.
       setView('new'); // leave the page in its edited state, not a view
       updateAfters();
-      sendResponse({ url: currentUrl, edits: snapshot() });
+      sendResponse({ url: currentUrl, edits: snapshot(), notes: noteList() });
       disable();
     }
   });

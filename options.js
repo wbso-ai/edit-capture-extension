@@ -1,6 +1,7 @@
 const DEFAULT_PROMPT = [
   'Apply the edits below to the source file referenced by the url.',
   'For each Before/After pair: locate the Before HTML in the file and replace it with the After HTML.',
+  'For each Element/Instruction pair: locate the element in the source and carry out the instruction on it.',
   'The selector line describes where the element lives in the rendered DOM, as a hint for finding it in the source.',
   'Keep everything else unchanged and preserve the original formatting and indentation.',
 ].join('\n');
@@ -64,10 +65,13 @@ function renderHistory() {
     cb.type = 'checkbox';
     cb.dataset.index = i;
     const details = document.createElement('details');
+    if (item.ignored) details.style.opacity = '0.55';
     const summary = document.createElement('summary');
     summary.textContent = `${new Date(item.ts).toLocaleString()} — ${item.count} edit${
       item.count === 1 ? '' : 's'
-    } — ${item.urls?.[0] || ''}${item.urls?.length > 1 ? ` (+${item.urls.length - 1})` : ''}`;
+    } — ${item.urls?.[0] || ''}${item.urls?.length > 1 ? ` (+${item.urls.length - 1})` : ''}${
+      item.ignored ? ' — ignored' : ''
+    }`;
     const actions = document.createElement('div');
     actions.className = 'entry-actions';
     const copyBtn = document.createElement('button');
