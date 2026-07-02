@@ -432,7 +432,7 @@
   let linkHintShown = false;
 
   const TOAST_CSS =
-    'position:fixed;right:20px;bottom:20px;z-index:2147483647;background:#001E35;color:#fff;' +
+    'position:fixed;right:20px;z-index:2147483647;background:#001E35;color:#fff;' +
     'border-left:4px solid #FBB734;border-radius:10px;padding:10px 16px;' +
     'font:600 13px/1.4 -apple-system,"Segoe UI",sans-serif;box-shadow:0 6px 24px rgba(0,30,53,.35);';
 
@@ -440,7 +440,12 @@
     const t = document.createElement('div');
     t.setAttribute('data-ec-ui', '');
     t.textContent = text;
-    t.style.cssText = TOAST_CSS;
+    // Right above the whole panel (chip + view bar + open list), never on top of it.
+    let bottom = 20;
+    if (panelEl?.isConnected) {
+      bottom = Math.round(innerHeight - panelEl.getBoundingClientRect().top + 8);
+    }
+    t.style.cssText = TOAST_CSS + `bottom:${bottom}px;`;
     (document.body || document.documentElement).appendChild(t);
     setTimeout(() => t.remove(), 2600);
   };
@@ -1080,8 +1085,8 @@
     panelEl.setAttribute('data-ec-ui', '');
     panelEl.contentEditable = 'false'; // keep our own UI out of designMode
     panelEl.style.cssText =
-      'position:fixed;left:20px;bottom:20px;z-index:2147483647;display:flex;flex-direction:column;' +
-      'align-items:flex-start;gap:8px;font:13px/1.4 -apple-system,"Segoe UI",sans-serif;color:#001E35;';
+      'position:fixed;right:20px;bottom:20px;z-index:2147483647;display:flex;flex-direction:column;' +
+      'align-items:flex-end;gap:8px;font:13px/1.4 -apple-system,"Segoe UI",sans-serif;color:#001E35;';
     listEl = document.createElement('div');
     listEl.style.cssText =
       'display:none;background:#fff;border:1px solid #CBD5E1;border-radius:10px;' +
@@ -1095,20 +1100,22 @@
       renderPanel();
     });
     viewBarEl = document.createElement('div');
+    // Centered above the chip row within the panel column.
     viewBarEl.style.cssText =
-      'display:none;background:#fff;border:1px solid #CBD5E1;border-radius:999px;overflow:hidden;' +
-      'box-shadow:0 4px 16px rgba(0,30,53,.2);';
+      'display:none;align-self:center;background:#fff;border:1px solid #CBD5E1;border-radius:999px;' +
+      'overflow:hidden;box-shadow:0 4px 16px rgba(0,30,53,.2);';
     for (const [mode, label] of [
-      ['original', 'Original'],
-      ['diff', 'Diff'],
-      ['new', 'New'],
+      ['original', 'original'],
+      ['diff', 'diff'],
+      ['new', 'new'],
     ]) {
       const b = document.createElement('button');
       b.dataset.mode = mode;
       b.textContent = label;
       b.style.cssText =
         'border:none;background:transparent;padding:6px 12px;cursor:pointer;' +
-        'font:600 12px/1 -apple-system,"Segoe UI",sans-serif;color:#001E35;';
+        'font:600 12px/1 -apple-system,"Segoe UI",sans-serif;color:#001E35;' +
+        (mode !== 'original' ? 'border-left:1px solid #E2E8F0;' : '');
       b.addEventListener('click', () => setView(mode));
       viewBarEl.appendChild(b);
     }
