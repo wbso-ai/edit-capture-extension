@@ -80,6 +80,9 @@ replace it with. No ambiguity, no back-and-forth.
   change to the webhook as soon as you pause typing, so your agent starts
   right away — the preference is remembered, and if the webhook is down
   changes simply stay batched
+- 📤 **Interim submit** — with changes pending, a send button appears next
+  to the chip (or press ⌘⏎): ships everything now and the session keeps
+  going with a fresh baseline
 - 🪶 **Light or heavy model** — the feather/dumbbell toggle picks how much
   thinking your agent should spend: light for quick text tweaks (fast,
   cheap model), heavy when instructions need real reasoning; the choice

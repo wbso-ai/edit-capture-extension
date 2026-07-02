@@ -161,10 +161,14 @@
     instantTimer = setTimeout(flushInstant, 2500);
   };
 
-  const flushInstant = () => {
-    if (!active || !instantMode) return;
-    // Mid-interaction? Try again after the next pause.
-    if (viewMode !== 'new' || adopting || noteEditor || linkEditing) return scheduleInstantFlush();
+  const flushNow = (manual) => {
+    if (!active) return;
+    // Mid-interaction? Instant retries after the next pause; manual just says so.
+    if (viewMode !== 'new' || adopting || noteEditor || linkEditing) {
+      if (manual) miniToast('Busy — try again in a moment');
+      else scheduleInstantFlush();
+      return;
+    }
     const edits = snapshot();
     const sentEls = new Set(tracked.keys());
     const sentNoteEls = new Set(notes.keys());
@@ -173,7 +177,10 @@
         { type: 'flushInstant', url: currentUrl, edits, notes: noteList() },
         (ok) => {
           void chrome.runtime.lastError;
-          if (!ok || !active) return; // no webhook / failed → stays batched
+          if (!ok || !active) {
+            if (manual && active) miniToast('⚠ Nothing sent — webhook unreachable');
+            return; // stays batched
+          }
           // ponytail: only drop what we sent; anything typed mid-flight keeps
           // its (new) tracking baseline
           sentEls.forEach((el) => tracked.delete(el));
@@ -186,6 +193,20 @@
         }
       );
     } catch (e) {}
+  };
+
+  const flushInstant = () => {
+    if (instantMode) flushNow(false);
+  };
+
+  // ⌘/Ctrl+Return: interim submit — closes an open editor first, then sends.
+  const onSubmitKey = (e) => {
+    if (!active || e.key !== 'Enter' || !(e.metaKey || e.ctrlKey)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (noteEditor) closeNoteEditor();
+    if (linkEditing) hideLinkUi();
+    flushNow(true);
   };
 
   // SPA navigation: close out the previous visit and start a fresh one.
@@ -371,6 +392,7 @@
     document.addEventListener('keyup', onAnnotateKey, true);
     document.addEventListener('keydown', onTabCycle, true);
     document.addEventListener('keydown', onEscDiscard, true);
+    document.addEventListener('keydown', onSubmitKey, true);
     document.addEventListener('click', onControlAltClick, true);
     document.addEventListener('click', onLinkClick, true);
     document.addEventListener('auxclick', onLinkClick, true);
@@ -1022,6 +1044,7 @@
   let viewBarEl = null;
   let modeBtn = null;
   let modelBtn = null;
+  let submitBtn = null;
   let panelOpen = false;
 
   // Current after-state of a tracked element, view-safe: while a view is
@@ -1128,9 +1151,20 @@
           : '🪶 Light model: fast and cheap'
       );
     });
+    submitBtn = document.createElement('button');
+    submitBtn.title = 'Send pending changes to the agent now (⌘⏎ — session keeps going)';
+    submitBtn.innerHTML =
+      '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
+      'stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+      '<path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg>';
+    submitBtn.style.cssText =
+      'border:none;border-radius:999px;width:30px;height:30px;cursor:pointer;flex:none;' +
+      'display:none;align-items:center;justify-content:center;background:#195FA4;color:#fff;' +
+      'box-shadow:0 4px 16px rgba(0,30,53,.3);';
+    submitBtn.addEventListener('click', () => flushNow(true));
     const chipRow = document.createElement('div');
     chipRow.style.cssText = 'display:flex;gap:8px;align-items:center;';
-    chipRow.append(modeBtn, modelBtn, chipEl, discardBtn);
+    chipRow.append(modeBtn, modelBtn, chipEl, submitBtn, discardBtn);
     paintModeBtn();
     paintModelBtn();
     panelEl.append(listEl, viewBarEl, chipRow);
@@ -1330,6 +1364,7 @@
       notes.size + carriedNotes.length + past.reduce((n, s) => n + (s.notes?.length || 0), 0);
     chipEl.textContent =
       `✏️ ${total} edit${total === 1 ? '' : 's'}` + (noteTotal ? ` · 💬 ${noteTotal}` : '');
+    if (submitBtn) submitBtn.style.display = total || noteTotal ? 'flex' : 'none';
     viewBarEl.style.display = entries.length ? 'flex' : 'none';
     for (const b of viewBarEl.children) {
       const on = b.dataset.mode === viewMode;
@@ -1504,7 +1539,7 @@
 
   const removePanel = () => {
     panelEl?.remove();
-    panelEl = chipEl = listEl = viewBarEl = modeBtn = modelBtn = null;
+    panelEl = chipEl = listEl = viewBarEl = modeBtn = modelBtn = submitBtn = null;
     panelOpen = false;
   };
 
@@ -1540,6 +1575,7 @@
     document.removeEventListener('keyup', onAnnotateKey, true);
     document.removeEventListener('keydown', onTabCycle, true);
     document.removeEventListener('keydown', onEscDiscard, true);
+    document.removeEventListener('keydown', onSubmitKey, true);
     document.removeEventListener('click', onControlAltClick, true);
     document.removeEventListener('click', onLinkClick, true);
     document.removeEventListener('auxclick', onLinkClick, true);
