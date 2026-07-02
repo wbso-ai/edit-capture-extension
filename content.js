@@ -506,8 +506,16 @@
   // temporarily editable again to change its label.
   let modeStyle = null;
   const editableOverrides = new Set();
+  // designMode turns on native spellcheck, painting red squiggles under every
+  // word. Suppress it on the editing host (body) and restore the page's own
+  // setting on teardown.
+  let prevSpellcheck = null; // undefined until saved; then null | string
 
   const addModeStyle = () => {
+    if (prevSpellcheck === null) {
+      prevSpellcheck = document.body.getAttribute('spellcheck') ?? false;
+    }
+    document.body.spellcheck = false;
     if (modeStyle?.isConnected) return;
     modeStyle?.remove();
     modeStyle = document.createElement('style');
@@ -520,6 +528,11 @@
   const removeModeStyle = () => {
     modeStyle?.remove();
     modeStyle = null;
+    if (prevSpellcheck !== null) {
+      if (prevSpellcheck === false) document.body.removeAttribute('spellcheck');
+      else document.body.setAttribute('spellcheck', prevSpellcheck);
+      prevSpellcheck = null;
+    }
     editableOverrides.forEach((el) => el.removeAttribute('contenteditable'));
     editableOverrides.clear();
   };
