@@ -159,9 +159,9 @@ running, the POST simply fails and the report falls back to the clipboard —
 no warning, no noise. Clear the field in the options to disable POSTing, or
 change it if you overrode `SLOP_OFF_PORT`.
 
-#### 3. Install the `/apply-edits` skill
+#### 3. Install the `/slop-off` skill
 
-The skill ships in this repo at `.claude/skills/apply-edits/SKILL.md`, so
+The skill ships in this repo at `.claude/skills/slop-off/SKILL.md`, so
 inside this repo the slash command works as-is. To use it from any project,
 install it user-wide with the [`skills`](https://skills.sh) CLI:
 
@@ -179,12 +179,12 @@ or non-interactively: `npx skills add wbso-ai/slop-off -g -a claude-code -y`).
 
 In a Claude Code session in the project whose site you're editing:
 
-- `/apply-edits` — processes reports in a loop: edit in the browser, end
+- `/slop-off` — processes reports in a loop: edit in the browser, end
   the session (toolbar icon / ⌘⇧E), watch the agent apply it, edit again —
   until you say *stop*
-- `/apply-edits once` — wait for and apply a single report
-- `/apply-edits latest` — apply the most recent report, without waiting
-- `/apply-edits list` — show the queue
+- `/slop-off once` — wait for and apply a single report
+- `/slop-off latest` — apply the most recent report, without waiting
+- `/slop-off list` — show the queue
 
 Reports queue up in order (`~/.slop-off/queue.json`, last 50), so
 several edit sessions in a row are all delivered — `wait_for_report`
@@ -200,7 +200,7 @@ tools (`wait_for_report`, `get_latest_report`, `list_reports`) work too:
 | `content.js` | Injected while edit mode is active: enables `designMode`, snapshots each element's `outerHTML` right before its first change (`beforeinput`), and syncs edits to the background (debounced) |
 | `options.html` / `options.js` | Settings page: prompt, webhook URL, report history — stored in `chrome.storage.sync` / `.local` |
 | `mcp/server.js` | Optional MCP bridge: HTTP endpoint for the webhook + `wait_for_report` / `get_latest_report` / `list_reports` tools over stdio |
-| `.claude/skills/apply-edits/` | Claude Code skill: `/apply-edits` processes queued reports in a loop |
+| `.claude/skills/slop-off/` | Claude Code skill: `/slop-off` processes queued reports in a loop |
 
 Details worth knowing:
 

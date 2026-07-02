@@ -1,10 +1,10 @@
 ---
-name: apply-edits
+name: slop-off
 description: >
   Verwerk Slop Off browser-rapporten via de slop-off MCP server en
   pas de edits toe op de broncode van het huidige project. Blijft standaard
   in een lus rapporten verwerken tot de gebruiker stopt. Gebruik bij
-  "/apply-edits", "pas mijn edit-rapport toe", "wacht op mijn browser-edits",
+  "/slop-off", "pas mijn edit-rapport toe", "wacht op mijn browser-edits",
   of nadat de gebruiker in de browser edits heeft gemaakt met de
   Slop Off extensie.
 ---
