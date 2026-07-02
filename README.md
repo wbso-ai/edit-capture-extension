@@ -125,8 +125,11 @@ This extension is not (yet) on the Chrome Web Store. Install it from source:
 ```
 Apply the edits below to the source file referenced by the url.
 For each Before/After pair: locate the Before HTML in the file and replace it with the After HTML.
+For each Element/Instruction pair: locate the element in the source and carry out the instruction on it.
 The selector line describes where the element lives in the rendered DOM, as a hint for finding it in the source.
 Keep everything else unchanged and preserve the original formatting and indentation.
+
+model: light
 
 ---
 
@@ -145,6 +148,16 @@ After:
 ​```
 <div class='hero'>Welcome to WBSO.ai</div>
 ​```
+
+selector: body > main > h1
+
+Element:
+
+​```
+<h1>Our features</h1>
+​```
+
+Instruction: Make this headline punchier
 ```
 
 ### Settings
@@ -207,9 +220,12 @@ or non-interactively: `npx skills add wbso-ai/slop-off -g -a claude-code -y`).
 
 In a Claude Code session in the project whose site you're editing:
 
-- `/slop-off` — processes reports in a loop: edit in the browser, end
-  the session (toolbar icon / ⌘⇧E), watch the agent apply it, edit again —
-  until you say *stop*
+- `/slop-off` — background loop: a cheap watcher subagent waits for reports
+  while your main session stays free for other work. Per report you get two
+  status lines (*📥 3 wijzigingen ontvangen* → *✅ 3 wijzigingen toegepast —
+  files*), and the actual work is delegated to a subagent matching the
+  report's `model:` line (light → Haiku, heavy → Opus). Say *stop* to end
+  the loop
 - `/slop-off once` — wait for and apply a single report
 - `/slop-off latest` — apply the most recent report, without waiting
 - `/slop-off list` — show the queue
@@ -225,7 +241,7 @@ tools (`wait_for_report`, `get_latest_report`, `list_reports`) work too:
 | File | Role |
 |---|---|
 | `background.js` | Service worker: toggles edit mode, stores edits per tab in `chrome.storage.session`, re-injects the content script after navigation, builds the report and copies it |
-| `content.js` | Injected while edit mode is active: enables `designMode`, snapshots each element's `outerHTML` right before its first change (`beforeinput`), and syncs edits to the background (debounced) |
+| `content.js` | Injected while edit mode is active: enables `designMode`, snapshots each element's `outerHTML` right before its first change (`beforeinput`), handles annotations/views/panel UI, and syncs edits + notes to the background (debounced) |
 | `options.html` / `options.js` | Settings page: prompt, webhook URL, report history — stored in `chrome.storage.sync` / `.local` |
 | `mcp/server.js` | Optional MCP bridge: HTTP endpoint for the webhook + `wait_for_report` / `get_latest_report` / `list_reports` tools over stdio |
 | `.claude/skills/slop-off/` | Claude Code skill: `/slop-off` processes queued reports in a loop |
@@ -249,9 +265,10 @@ Details worth knowing:
 | `clipboardWrite` | Copy the report to the clipboard |
 | `activeTab` | Baseline access to the tab you clicked on |
 
-Nothing is sent anywhere: the extension has no remote code, no analytics, and
-makes no network requests. Your edits never leave your machine — the report
-only goes to your clipboard.
+The extension has no remote code and no analytics. The only network request
+it makes is the report POST to your own webhook URL — by default
+`http://localhost:8931`, i.e. the MCP bridge on your own machine. Clear the
+field in the options and your edits never leave the clipboard.
 
 ## Limitations
 
