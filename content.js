@@ -20,6 +20,8 @@
   let carried = []; // adopted edits from an earlier visit, not (yet) re-attached to a live element
   let reapplyTimers = [];
   let viewMode = 'new'; // 'original' | 'diff' | 'new' — what the page currently shows
+  let instantMode = false; // ⚡: flush each change to the agent after a short pause
+  let instantTimer = null;
   let adopting = false; // getSections roundtrip in flight; hold syncs so they can't clobber old edits
   let syncWanted = false;
   let syncTimer = null;
@@ -149,6 +151,40 @@
     } catch (e) {
       // Extension context gone (e.g. reloaded); nothing we can do.
     }
+    if (instantMode) scheduleInstantFlush();
+  };
+
+  // ── Instant mode: ship pending changes after a short pause ──────────
+  const scheduleInstantFlush = () => {
+    clearTimeout(instantTimer);
+    instantTimer = setTimeout(flushInstant, 2500);
+  };
+
+  const flushInstant = () => {
+    if (!active || !instantMode) return;
+    // Mid-interaction? Try again after the next pause.
+    if (viewMode !== 'new' || adopting || noteEditor || linkEditing) return scheduleInstantFlush();
+    const edits = snapshot();
+    const sentEls = new Set(tracked.keys());
+    const sentNoteEls = new Set(notes.keys());
+    try {
+      chrome.runtime.sendMessage(
+        { type: 'flushInstant', url: currentUrl, edits, notes: noteList() },
+        (ok) => {
+          void chrome.runtime.lastError;
+          if (!ok || !active) return; // no webhook / failed → stays batched
+          // ponytail: only drop what we sent; anything typed mid-flight keeps
+          // its (new) tracking baseline
+          sentEls.forEach((el) => tracked.delete(el));
+          sentNoteEls.forEach((el) => notes.delete(el));
+          carried = [];
+          carriedNotes = [];
+          syncMarkers();
+          renderPanel();
+          miniToast('⚡ Sent to agent');
+        }
+      );
+    } catch (e) {}
   };
 
   // SPA navigation: close out the previous visit and start a fresh one.
@@ -359,6 +395,12 @@
     showBorder();
     renderPanel();
     adoptSection();
+    try {
+      chrome.storage.sync.get({ instant: false }, (v) => {
+        instantMode = Boolean(v && v.instant);
+        paintModeBtn();
+      });
+    } catch (e) {}
   };
 
   // ── Links: never navigate while editing; ⌥-click edits the URL ──────
@@ -975,6 +1017,7 @@
   let chipEl = null;
   let listEl = null;
   let viewBarEl = null;
+  let modeBtn = null;
   let panelOpen = false;
 
   // Current after-state of a tracked element, view-safe: while a view is
@@ -1052,9 +1095,23 @@
     discardBtn.addEventListener('mouseenter', () => (discardBtn.style.color = '#F87171'));
     discardBtn.addEventListener('mouseleave', () => (discardBtn.style.color = '#94A3B8'));
     discardBtn.addEventListener('click', discardSession);
+    modeBtn = document.createElement('button');
+    modeBtn.style.cssText =
+      'border:none;border-radius:999px;width:30px;height:30px;cursor:pointer;flex:none;' +
+      'font:600 13px/1 -apple-system,"Segoe UI",sans-serif;box-shadow:0 4px 16px rgba(0,30,53,.3);';
+    modeBtn.addEventListener('click', () => {
+      instantMode = !instantMode;
+      try {
+        chrome.storage.sync.set({ instant: instantMode });
+      } catch (e) {}
+      paintModeBtn();
+      miniToast(instantMode ? '⚡ Instant: changes are sent as soon as you pause' : '📦 Batch: changes ship when you end the session');
+      if (instantMode) scheduleInstantFlush();
+    });
     const chipRow = document.createElement('div');
     chipRow.style.cssText = 'display:flex;gap:8px;align-items:center;';
-    chipRow.append(chipEl, discardBtn);
+    chipRow.append(modeBtn, chipEl, discardBtn);
+    paintModeBtn();
     panelEl.append(listEl, viewBarEl, chipRow);
     (document.body || document.documentElement).appendChild(panelEl);
   };
@@ -1379,9 +1436,31 @@
     }
   };
 
+  const SVG_BOLT =
+    '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" ' +
+    'stroke-width="1.5" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>';
+  const SVG_BOX =
+    '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
+    'stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+    '<path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/>' +
+    '<path d="M3.3 7 12 12l8.7-5"/><path d="M12 22V12"/></svg>';
+
+  const paintModeBtn = () => {
+    if (!modeBtn) return;
+    modeBtn.innerHTML = instantMode ? SVG_BOLT : SVG_BOX;
+    modeBtn.style.display = 'flex';
+    modeBtn.style.alignItems = 'center';
+    modeBtn.style.justifyContent = 'center';
+    modeBtn.title = instantMode
+      ? 'Instant: each change is sent to the agent as soon as you pause — click for batch'
+      : 'Batch: changes ship when you end the session — click for instant';
+    modeBtn.style.background = instantMode ? '#FBB734' : '#001E35';
+    modeBtn.style.color = instantMode ? '#fff' : '#94A3B8';
+  };
+
   const removePanel = () => {
     panelEl?.remove();
-    panelEl = chipEl = listEl = viewBarEl = null;
+    panelEl = chipEl = listEl = viewBarEl = modeBtn = null;
     panelOpen = false;
   };
 
@@ -1403,6 +1482,7 @@
     if (!active) return;
     active = false;
     clearTimeout(syncTimer);
+    clearTimeout(instantTimer);
     clearInterval(urlWatch);
     document.removeEventListener('beforeinput', onBeforeInput, true);
     document.removeEventListener('input', onInput, true);

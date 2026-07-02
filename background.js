@@ -286,6 +286,30 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 
+  if (msg.type === 'flushInstant') {
+    // ⚡ Instant mode: ship everything pending to the webhook right now.
+    // On success the session's sections are cleared (the content script
+    // resets its baselines); on failure everything simply stays batched.
+    (async () => {
+      if (!(await isActive(tabId))) return sendResponse(false);
+      const sections = await getSections(tabId);
+      upsertSection(sections, msg);
+      const withContent = sections.filter((s) => sectionSize(s) > 0);
+      if (!withContent.length) return sendResponse(false);
+      const { prompt } = await chrome.storage.sync.get({ prompt: DEFAULT_PROMPT });
+      const report = buildReport(prompt, withContent, msg.url);
+      const count = withContent.reduce((n, s) => n + sectionSize(s), 0);
+      const sent = await postWebhook(report, count, withContent);
+      if (!sent) return sendResponse(false);
+      await saveHistory(report, count, withContent);
+      await chrome.storage.session.set({ [sectionsKey(tabId)]: [] });
+      await setBadge(tabId, `${count}`, '#195FA4');
+      setTimeout(() => setBadge(tabId, 'REC', '#DC2626'), 1500);
+      sendResponse(true);
+    })();
+    return true;
+  }
+
   if (msg.type === 'discard') {
     // User threw the whole session away (✕ / double-Esc): nothing is copied
     // or sent, but the report is kept in history marked as ignored.

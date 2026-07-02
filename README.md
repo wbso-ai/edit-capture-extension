@@ -75,6 +75,11 @@ replace it with. No ambiguity, no back-and-forth.
   double-Esc) reverts the page and throws the session away, with a
   confirmation when there are changes or notes; the report is still kept in
   history, marked as ignored
+- ⚡ **Instant or batch** — the 📦/⚡ toggle next to the chip: batch
+  (default) ships everything when you end the session; instant sends each
+  change to the webhook as soon as you pause typing, so your agent starts
+  right away — the preference is remembered, and if the webhook is down
+  changes simply stay batched
 - 🔔 **On-page toast** — a confirmation appears when the report is copied
 - 💾 **Never loses a report** — if copying fails (e.g. you ended edit mode on
   a `chrome://` page), the report is kept and copied on your next click
