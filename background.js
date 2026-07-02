@@ -18,13 +18,8 @@ async function saveHistory(report, count, sections) {
     count,
     urls: [...new Set(sections.map((s) => s.url))],
     report,
-    sections, // structured copy, so a later session can resume/combine
   });
-  // ponytail: raw sections are bulky; keep them on the 5 newest entries only
-  const trimmed = history
-    .slice(0, HISTORY_MAX)
-    .map((h, i) => (i > 4 ? { ...h, sections: undefined } : h));
-  await chrome.storage.local.set({ [HISTORY_KEY]: trimmed });
+  await chrome.storage.local.set({ [HISTORY_KEY]: history.slice(0, HISTORY_MAX) });
 }
 
 async function isActive(tabId) {
@@ -192,14 +187,6 @@ chrome.action.onClicked.addListener(async (tab) => {
       [sectionsKey(tabId)]: [],
     });
     await setBadge(tabId, 'REC', '#DC2626');
-
-    // Offer to combine this session with the last copied report.
-    const { [HISTORY_KEY]: history = [] } = await chrome.storage.local.get(HISTORY_KEY);
-    if (history[0]?.sections?.length) {
-      try {
-        await chrome.tabs.sendMessage(tabId, { type: 'offerResume', count: history[0].count });
-      } catch (e) {}
-    }
     return;
   }
 
@@ -220,14 +207,40 @@ chrome.action.onClicked.addListener(async (tab) => {
   await finalizeReport(tabId, withEdits, tab.url || '');
 });
 
+// POST the report to the configured webhook (e.g. the MCP bridge).
+// Returns null when no webhook is configured, else whether it succeeded.
+async function postWebhook(report, count, sections) {
+  const { webhookUrl } = await chrome.storage.sync.get({ webhookUrl: '' });
+  if (!webhookUrl.trim()) return null;
+  try {
+    const res = await fetch(webhookUrl.trim(), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ report, count, urls: [...new Set(sections.map((s) => s.url))] }),
+    });
+    return res.ok;
+  } catch (e) {
+    return false;
+  }
+}
+
 // Build the final report, save it to history, copy it in the tab.
 async function finalizeReport(tabId, sections, fallbackUrl) {
   const { prompt } = await chrome.storage.sync.get({ prompt: DEFAULT_PROMPT });
   const report = buildReport(prompt, sections, fallbackUrl);
   const count = sections.reduce((n, s) => n + s.edits.length, 0);
-  if (count > 0) await saveHistory(report, count, sections);
+  let sent = null;
+  if (count > 0) {
+    await saveHistory(report, count, sections);
+    sent = await postWebhook(report, count, sections);
+  }
 
-  const copied = await copyInTab(tabId, report, `Report copied — ${count} edit${count === 1 ? '' : 's'}`);
+  const suffix = sent === true ? ' · sent to agent' : sent === false ? ' · ⚠ webhook unreachable' : '';
+  const copied = await copyInTab(
+    tabId,
+    report,
+    `Report copied — ${count} edit${count === 1 ? '' : 's'}${suffix}`
+  );
   if (copied) {
     flashBadge(tabId, `${count}`, '#195FA4');
   } else {
@@ -259,19 +272,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === 'getSections') {
     // The in-page edits panel shows past pages' edits too.
     getSections(tabId).then(sendResponse);
-    return true;
-  }
-
-  if (msg.type === 'resume') {
-    // Seed this session with the sections of the last copied report.
-    (async () => {
-      if (!(await isActive(tabId))) return sendResponse(false);
-      const { [HISTORY_KEY]: history = [] } = await chrome.storage.local.get(HISTORY_KEY);
-      const sections = history[0]?.sections;
-      if (!sections?.length) return sendResponse(false);
-      await chrome.storage.session.set({ [sectionsKey(tabId)]: sections });
-      sendResponse(true);
-    })();
     return true;
   }
 

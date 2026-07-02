@@ -340,36 +340,6 @@
     setTimeout(() => t.remove(), 2600);
   };
 
-  // Offer to seed this session with the last copied report's edits.
-  const offerResume = (count) => {
-    const t = document.createElement('div');
-    t.setAttribute('data-ec-ui', '');
-    t.contentEditable = 'false';
-    t.style.cssText = TOAST_CSS + 'display:flex;gap:10px;align-items:center;padding:12px 16px;';
-    const label = document.createElement('span');
-    label.textContent = `Combine with your last report (${count} edit${count === 1 ? '' : 's'})?`;
-    const yes = document.createElement('button');
-    yes.textContent = 'Combine';
-    yes.style.cssText = linkBtnStyle + 'background:#195FA4;';
-    yes.addEventListener('click', () => {
-      t.remove();
-      try {
-        chrome.runtime.sendMessage({ type: 'resume' }, (ok) => {
-          void chrome.runtime.lastError;
-          if (!ok) return;
-          adoptSection();
-          renderPanel();
-        });
-      } catch (e) {}
-    });
-    const no = document.createElement('button');
-    no.textContent = '✕';
-    no.style.cssText = linkBtnStyle;
-    no.addEventListener('click', () => t.remove());
-    t.append(label, yes, no);
-    (document.body || document.documentElement).appendChild(t);
-    setTimeout(() => t.remove(), 12000);
-  };
 
   const onLinkClick = (e) => {
     if (e.target.closest && e.target.closest('[data-ec-ui]')) return;
@@ -884,10 +854,6 @@
   };
 
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
-    if (msg.type === 'offerResume') {
-      offerResume(msg.count);
-      return;
-    }
     if (msg.type === 'finalize') {
       // Don't checkUrlChange() here: its fire-and-forget sync could race the
       // background's section read. `tracked` always belongs to `currentUrl`,

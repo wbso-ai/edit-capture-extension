@@ -52,8 +52,6 @@ replace it with. No ambiguity, no back-and-forth.
   its text)
 - 🔁 **Edits re-apply on return** — revisit a page you edited during the
   session and your changes are applied to it again and stay editable
-- ➕ **Combine sessions** — starting a new session offers to load the edits
-  of your last copied report, so you can keep building on them
 - 🔗 **Safe links** — link clicks never navigate while editing; hovering a
   link shows an inline URL editor plus a ↗ button (or ⌘/Ctrl-click) to
   deliberately follow the link while the edit session continues
@@ -65,7 +63,9 @@ replace it with. No ambiguity, no back-and-forth.
 - 🔔 **On-page toast** — a confirmation appears when the report is copied
 - 💾 **Never loses a report** — if copying fails (e.g. you ended edit mode on
   a `chrome://` page), the report is kept and copied on your next click
-- 🪶 **Zero dependencies** — three small vanilla JS files, no build step
+- 🤝 **MCP bridge** — POST reports to the bundled `mcp/server.js` and your
+  coding agent picks them up via `wait_for_report`, queued and in order
+- 🪶 **Zero dependencies** — small vanilla JS files, no build step
 
 ## Installation
 
@@ -126,13 +126,72 @@ Right-click the extension icon → **Options** (or go via
 the prompt that is prepended to every report, or clear it to copy the bare
 report. **Reset to default** restores the built-in prompt.
 
+### Straight into your coding agent (MCP)
+
+Instead of pasting from the clipboard, reports can flow directly into
+Claude Code (or any MCP client) via the bundled bridge in `mcp/server.js` —
+a single dependency-free Node script that receives reports from the
+extension over HTTP and serves them to the agent as MCP tools.
+
+#### 1. Register the MCP server
+
+From the root of this repo:
+
+```sh
+claude mcp add --scope user edit-capture -- node "$(pwd)/mcp/server.js"
+```
+
+`--scope user` makes the tools available in every project. Verify with
+`claude mcp list`; remove again with `claude mcp remove edit-capture`.
+The bridge listens on port `8931` (override with the `EDIT_CAPTURE_PORT`
+env var — then also adjust the webhook URL below).
+
+#### 2. Point the extension at it
+
+Extension options (right-click the icon → **Options**) →
+**Webhook URL** → `http://localhost:8931` → **Save**.
+
+From now on every report is POSTed to the bridge, next to the clipboard.
+The on-page toast confirms it: *"sent to agent"* — or *"⚠ webhook
+unreachable"* when no Claude Code session (and thus no bridge) is running.
+
+#### 3. Install the `/apply-edits` skill
+
+The skill ships in this repo at `.claude/skills/apply-edits/SKILL.md`, so
+inside this repo the slash command works as-is. To use it from any project,
+install it user-wide:
+
+```sh
+mkdir -p ~/.claude/skills/apply-edits
+cp .claude/skills/apply-edits/SKILL.md ~/.claude/skills/apply-edits/
+```
+
+#### 4. Use it
+
+In a Claude Code session in the project whose site you're editing:
+
+- `/apply-edits` — processes reports in a loop: edit in the browser, end
+  the session (toolbar icon / ⌘⇧E), watch the agent apply it, edit again —
+  until you say *stop*
+- `/apply-edits once` — wait for and apply a single report
+- `/apply-edits latest` — apply the most recent report, without waiting
+- `/apply-edits list` — show the queue
+
+Reports queue up in order (`~/.edit-capture/queue.json`, last 50), so
+several edit sessions in a row are all delivered — `wait_for_report`
+returns immediately while there's a backlog. Without the skill the raw MCP
+tools (`wait_for_report`, `get_latest_report`, `list_reports`) work too:
+*"wait for my edit report and apply it"*.
+
 ## How it works
 
 | File | Role |
 |---|---|
 | `background.js` | Service worker: toggles edit mode, stores edits per tab in `chrome.storage.session`, re-injects the content script after navigation, builds the report and copies it |
 | `content.js` | Injected while edit mode is active: enables `designMode`, snapshots each element's `outerHTML` right before its first change (`beforeinput`), and syncs edits to the background (debounced) |
-| `options.html` / `options.js` | Settings page for the prompt, stored in `chrome.storage.sync` |
+| `options.html` / `options.js` | Settings page: prompt, webhook URL, report history — stored in `chrome.storage.sync` / `.local` |
+| `mcp/server.js` | Optional MCP bridge: HTTP endpoint for the webhook + `wait_for_report` / `get_latest_report` / `list_reports` tools over stdio |
+| `.claude/skills/apply-edits/` | Claude Code skill: `/apply-edits` processes queued reports in a loop |
 
 Details worth knowing:
 
@@ -141,8 +200,8 @@ Details worth knowing:
 - If a parent element is already tracked, its children are not tracked
   separately — this prevents nested duplicate entries in the report.
 - Elements you focus but don't actually change are filtered out.
-- Each page visit gets its own report section; edits are upserted per visit,
-  so reloading and re-editing the same page works as expected.
+- Report sections are keyed by URL (ignoring the `#hash`): one section per
+  page, no matter how often you visit it; revisiting re-applies your edits.
 
 ### Permissions
 

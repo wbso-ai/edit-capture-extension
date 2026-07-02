@@ -64,6 +64,20 @@
       outline: 2px solid var(--wbso-blue);
       border-color: transparent;
     }
+    input[type="url"] {
+      width: 100%;
+      box-sizing: border-box;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 13px;
+      padding: 10px 12px;
+      border: 1px solid #CBD5E1;
+      border-radius: 10px;
+      color: var(--wbso-navy);
+    }
+    input[type="url"]:focus {
+      outline: 2px solid var(--wbso-blue);
+      border-color: transparent;
+    }
     p.hint { color: var(--wbso-slate); font-size: 13px; margin-top: 8px; }
     .actions { margin-top: 16px; display: flex; align-items: center; gap: 12px; }
     button {
@@ -131,6 +145,14 @@
         This text is placed at the top of the clipboard report, before the
         url and Before/After blocks. Clear it to copy the report only.
       </p>
+      <label for="webhook" style="margin-top: 24px">Webhook URL (optional)</label>
+      <input id="webhook" type="url" placeholder="http://localhost:8931">
+      <p class="hint">
+        Reports are also POSTed here, next to the clipboard. Point it at the
+        bundled MCP bridge (<code>mcp/server.js</code>) to feed edits straight
+        into your coding agent.
+      </p>
+
       <div class="actions">
         <button id="save">Save</button>
         <button id="reset" class="secondary">Reset to default</button>

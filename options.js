@@ -6,6 +6,7 @@ const DEFAULT_PROMPT = [
 ].join('\n');
 
 const promptEl = document.getElementById('prompt');
+const webhookEl = document.getElementById('webhook');
 const statusEl = document.getElementById('status');
 
 function flash(message) {
@@ -13,12 +14,15 @@ function flash(message) {
   setTimeout(() => (statusEl.textContent = ''), 2000);
 }
 
-chrome.storage.sync.get({ prompt: DEFAULT_PROMPT }, ({ prompt }) => {
+chrome.storage.sync.get({ prompt: DEFAULT_PROMPT, webhookUrl: '' }, ({ prompt, webhookUrl }) => {
   promptEl.value = prompt;
+  webhookEl.value = webhookUrl;
 });
 
 document.getElementById('save').addEventListener('click', () => {
-  chrome.storage.sync.set({ prompt: promptEl.value }, () => flash('Saved ✓'));
+  chrome.storage.sync.set({ prompt: promptEl.value, webhookUrl: webhookEl.value.trim() }, () =>
+    flash('Saved ✓')
+  );
 });
 
 document.getElementById('reset').addEventListener('click', () => {
