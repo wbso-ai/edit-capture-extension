@@ -39,6 +39,8 @@ Verwerk rapporten van de `slop-off` MCP server en pas ze toe op de bron.
 - Argument `latest`: roep `get_latest_report` aan (niet wachten), verwerk,
   stop.
 - Argument `list`: roep `list_reports` aan, toon de queue, vraag welke.
+- Argument `clear`: roep `clear_reports` aan en meld in één regel hoeveel
+  rapporten er zijn geleegd. Niets verwerken, stop daarna.
 
 ## Model (licht of zwaar) — verplicht delegeren
 

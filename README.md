@@ -229,6 +229,7 @@ In a Claude Code session in the project whose site you're editing:
 - `/slop-off once` — wait for and apply a single report
 - `/slop-off latest` — apply the most recent report, without waiting
 - `/slop-off list` — show the queue
+- `/slop-off clear` — drop all pending reports from the queue
 
 Reports queue up in order (`~/.slop-off/queue.json`, last 50), so
 several edit sessions in a row are all delivered — `wait_for_report`
@@ -243,7 +244,7 @@ tools (`wait_for_report`, `get_latest_report`, `list_reports`) work too:
 | `background.js` | Service worker: toggles edit mode, stores edits per tab in `chrome.storage.session`, re-injects the content script after navigation, builds the report and copies it |
 | `content.js` | Injected while edit mode is active: enables `designMode`, snapshots each element's `outerHTML` right before its first change (`beforeinput`), handles annotations/views/panel UI, and syncs edits + notes to the background (debounced) |
 | `options.html` / `options.js` | Settings page: prompt, webhook URL, report history — stored in `chrome.storage.sync` / `.local` |
-| `mcp/server.js` | Optional MCP bridge: HTTP endpoint for the webhook + `wait_for_report` / `get_latest_report` / `list_reports` tools over stdio |
+| `mcp/server.js` | Optional MCP bridge: HTTP endpoint for the webhook + `wait_for_report` / `get_latest_report` / `list_reports` / `clear_reports` tools over stdio |
 | `.claude/skills/slop-off/` | Claude Code skill: `/slop-off` processes queued reports in a loop |
 
 Details worth knowing:

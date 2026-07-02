@@ -115,6 +115,13 @@ const TOOLS = [
     description: 'List queued edit reports (id, timestamp, edit count, urls, consumed).',
     inputSchema: { type: 'object', properties: {} },
   },
+  {
+    name: 'clear_reports',
+    description:
+      'Clear the queue: mark every unprocessed edit report as consumed so nothing pending ' +
+      'gets picked up. Returns how many reports were cleared.',
+    inputSchema: { type: 'object', properties: {} },
+  },
 ];
 
 const asText = (r) =>
@@ -138,6 +145,14 @@ async function callTool(name, args = {}) {
           )
           .join('\n') + tail
       : 'No new reports.' + tail;
+  }
+  if (name === 'clear_reports') {
+    const fresh = queue.filter((r) => !r.consumed);
+    fresh.forEach((r) => (r.consumed = true));
+    saveQueue();
+    return fresh.length
+      ? `Cleared ${fresh.length} pending report${fresh.length === 1 ? '' : 's'}.`
+      : 'Queue was already empty.';
   }
   if (name === 'get_latest_report') {
     const r = queue[queue.length - 1];
