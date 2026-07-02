@@ -16,7 +16,8 @@ Verwerk rapporten van de `slop-off` MCP server en pas ze toe op de bron.
 ## Modus
 
 - **Standaard (lus)**: roep `wait_for_report` aan (timeout_seconds: 60),
-  pas het rapport toe, meld kort wat er is gedaan, en roep dán meteen weer
+  delegeer het rapport aan een subagent met het gevraagde model (zie
+  "Model" hieronder), meld kort wat er is gedaan, en roep dán meteen weer
   `wait_for_report` aan. Blijf dit herhalen tot de gebruiker zegt te stoppen
   ("stop", "klaar", of een andere opdracht geeft).
   - Timeout zonder rapport? Gewoon opnieuw `wait_for_report` aanroepen,
@@ -27,6 +28,24 @@ Verwerk rapporten van de `slop-off` MCP server en pas ze toe op de bron.
 - Argument `once`: verwerk precies één rapport en stop.
 - Argument `latest`: roep `get_latest_report` aan (niet wachten), pas toe, stop.
 - Argument `list`: roep `list_reports` aan, toon de queue, vraag welke.
+
+## Model (licht of zwaar) — verplicht delegeren
+
+Jij bent de orchestrator en verwerkt rapporten NIET zelf. Spawn per rapport
+een subagent via de Agent-tool met het model dat het rapport vraagt (de
+`model:`-regel in het rapport / de MCP-header):
+
+- **`model: light`** (of geen regel) → `Agent` met `model: "haiku"`
+- **`model: heavy`** → `Agent` met `model: "opus"`
+
+Geef de subagent in zijn prompt mee: het volledige rapport, het werkpad van
+het project, en de volledige "Edits toepassen"-instructies hieronder. Laat
+hem rapporteren welke bestanden zijn gewijzigd en welke edits niet
+toepasbaar waren; vat dat in 1-3 regels samen voor de gebruiker en ga terug
+naar wachten. Wacht op de subagent (`run_in_background: false`) zodat
+rapporten in volgorde verwerkt worden.
+
+Alleen als de Agent-tool niet beschikbaar is verwerk je het rapport zelf.
 
 ## Edits toepassen
 

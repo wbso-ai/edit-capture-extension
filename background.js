@@ -46,11 +46,12 @@ function upsertSection(sections, { url, edits, notes }) {
 
 const sectionSize = (s) => s.edits.length + (s.notes?.length || 0);
 
-function buildReport(promptPrefix, sections, fallbackUrl) {
+function buildReport(promptPrefix, sections, fallbackUrl, model) {
   const parts = [];
   if (promptPrefix && promptPrefix.trim()) {
     parts.push(promptPrefix.trim(), '');
   }
+  if (model) parts.push(`model: ${model}`, '');
 
   const withContent = sections.filter((s) => sectionSize(s) > 0);
   if (withContent.length === 0) {
@@ -218,14 +219,14 @@ chrome.action.onClicked.addListener(async (tab) => {
 
 // POST the report to the configured webhook (e.g. the MCP bridge).
 // Returns null when no webhook is configured, else whether it succeeded.
-async function postWebhook(report, count, sections) {
+async function postWebhook(report, count, sections, model) {
   const { webhookUrl } = await chrome.storage.sync.get({ webhookUrl: 'http://localhost:8931' });
   if (!webhookUrl.trim()) return null;
   try {
     const res = await fetch(webhookUrl.trim(), {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ report, count, urls: [...new Set(sections.map((s) => s.url))] }),
+      body: JSON.stringify({ report, count, model, urls: [...new Set(sections.map((s) => s.url))] }),
     });
     return res.ok;
   } catch (e) {
@@ -235,13 +236,13 @@ async function postWebhook(report, count, sections) {
 
 // Build the final report, save it to history, copy it in the tab.
 async function finalizeReport(tabId, sections, fallbackUrl) {
-  const { prompt } = await chrome.storage.sync.get({ prompt: DEFAULT_PROMPT });
-  const report = buildReport(prompt, sections, fallbackUrl);
+  const { prompt, model } = await chrome.storage.sync.get({ prompt: DEFAULT_PROMPT, model: 'light' });
+  const report = buildReport(prompt, sections, fallbackUrl, model);
   const count = sections.reduce((n, s) => n + sectionSize(s), 0);
   let sent = null;
   if (count > 0) {
     await saveHistory(report, count, sections);
-    sent = await postWebhook(report, count, sections);
+    sent = await postWebhook(report, count, sections, model);
   }
 
   // Only confirm on success; a failed POST (no bridge running) falls back to
@@ -296,10 +297,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       upsertSection(sections, msg);
       const withContent = sections.filter((s) => sectionSize(s) > 0);
       if (!withContent.length) return sendResponse(false);
-      const { prompt } = await chrome.storage.sync.get({ prompt: DEFAULT_PROMPT });
-      const report = buildReport(prompt, withContent, msg.url);
+      const { prompt, model } = await chrome.storage.sync.get({
+        prompt: DEFAULT_PROMPT,
+        model: 'light',
+      });
+      const report = buildReport(prompt, withContent, msg.url, model);
       const count = withContent.reduce((n, s) => n + sectionSize(s), 0);
-      const sent = await postWebhook(report, count, withContent);
+      const sent = await postWebhook(report, count, withContent, model);
       if (!sent) return sendResponse(false);
       await saveHistory(report, count, withContent);
       await chrome.storage.session.set({ [sectionsKey(tabId)]: [] });
@@ -320,7 +324,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       const withContent = sections.filter((s) => sectionSize(s) > 0);
       if (!withContent.length) return;
       const { prompt } = await chrome.storage.sync.get({ prompt: DEFAULT_PROMPT });
-      const report = buildReport(prompt, withContent, sender.tab?.url || '');
+      const report = buildReport(prompt, withContent, sender.tab?.url || '', null);
       const count = withContent.reduce((n, s) => n + sectionSize(s), 0);
       await saveHistory(report, count, withContent, true);
     })();

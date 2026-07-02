@@ -22,6 +22,7 @@
   let viewMode = 'new'; // 'original' | 'diff' | 'new' — what the page currently shows
   let instantMode = false; // ⚡: flush each change to the agent after a short pause
   let instantTimer = null;
+  let heavyModel = false; // 🏋: ask the agent to use a heavy/thinking model
   let adopting = false; // getSections roundtrip in flight; hold syncs so they can't clobber old edits
   let syncWanted = false;
   let syncTimer = null;
@@ -396,9 +397,11 @@
     renderPanel();
     adoptSection();
     try {
-      chrome.storage.sync.get({ instant: false }, (v) => {
+      chrome.storage.sync.get({ instant: false, model: 'light' }, (v) => {
         instantMode = Boolean(v && v.instant);
+        heavyModel = v?.model === 'heavy';
         paintModeBtn();
+        paintModelBtn();
       });
     } catch (e) {}
   };
@@ -1018,6 +1021,7 @@
   let listEl = null;
   let viewBarEl = null;
   let modeBtn = null;
+  let modelBtn = null;
   let panelOpen = false;
 
   // Current after-state of a tracked element, view-safe: while a view is
@@ -1108,10 +1112,27 @@
       miniToast(instantMode ? '⚡ Instant: changes are sent as soon as you pause' : '📦 Batch: changes ship when you end the session');
       if (instantMode) scheduleInstantFlush();
     });
+    modelBtn = document.createElement('button');
+    modelBtn.style.cssText =
+      'border:none;border-radius:999px;width:30px;height:30px;cursor:pointer;flex:none;' +
+      'display:flex;align-items:center;justify-content:center;box-shadow:0 4px 16px rgba(0,30,53,.3);';
+    modelBtn.addEventListener('click', () => {
+      heavyModel = !heavyModel;
+      try {
+        chrome.storage.sync.set({ model: heavyModel ? 'heavy' : 'light' });
+      } catch (e) {}
+      paintModelBtn();
+      miniToast(
+        heavyModel
+          ? '🏋 Heavy model: for changes that need real thinking'
+          : '🪶 Light model: fast and cheap'
+      );
+    });
     const chipRow = document.createElement('div');
     chipRow.style.cssText = 'display:flex;gap:8px;align-items:center;';
-    chipRow.append(modeBtn, chipEl, discardBtn);
+    chipRow.append(modeBtn, modelBtn, chipEl, discardBtn);
     paintModeBtn();
+    paintModelBtn();
     panelEl.append(listEl, viewBarEl, chipRow);
     (document.body || document.documentElement).appendChild(panelEl);
   };
@@ -1458,9 +1479,32 @@
     modeBtn.style.color = instantMode ? '#fff' : '#94A3B8';
   };
 
+  const SVG_FEATHER =
+    '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
+    'stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+    '<path d="M20.24 12.24a6 6 0 0 0-8.49-8.49L5 10.5V19h8.5z"/>' +
+    '<line x1="16" y1="8" x2="2" y2="22"/><line x1="17.5" y1="15" x2="9" y2="15"/></svg>';
+  const SVG_DUMBBELL =
+    '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
+    'stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+    '<path d="M14.4 14.4 9.6 9.6"/>' +
+    '<path d="M18.657 21.485a2 2 0 1 1-2.829-2.828l-1.767 1.768a2 2 0 1 1-2.829-2.829l6.364-6.364a2 2 0 1 1 2.829 2.829l-1.768 1.767a2 2 0 1 1 2.828 2.829z"/>' +
+    '<path d="m21.5 21.5-1.4-1.4"/><path d="M3.9 3.9 2.5 2.5"/>' +
+    '<path d="M6.404 12.768a2 2 0 1 1-2.829-2.829l1.768-1.767a2 2 0 1 1-2.828-2.829l2.828-2.828a2 2 0 1 1 2.829 2.828l1.767-1.768a2 2 0 1 1 2.829 2.829z"/></svg>';
+
+  const paintModelBtn = () => {
+    if (!modelBtn) return;
+    modelBtn.innerHTML = heavyModel ? SVG_DUMBBELL : SVG_FEATHER;
+    modelBtn.title = heavyModel
+      ? 'Heavy model: deep thinking — click for light'
+      : 'Light model: fast and cheap — click for heavy';
+    modelBtn.style.background = heavyModel ? '#195FA4' : '#001E35';
+    modelBtn.style.color = heavyModel ? '#fff' : '#94A3B8';
+  };
+
   const removePanel = () => {
     panelEl?.remove();
-    panelEl = chipEl = listEl = viewBarEl = modeBtn = null;
+    panelEl = chipEl = listEl = viewBarEl = modeBtn = modelBtn = null;
     panelOpen = false;
   };
 

@@ -80,6 +80,11 @@ replace it with. No ambiguity, no back-and-forth.
   change to the webhook as soon as you pause typing, so your agent starts
   right away — the preference is remembered, and if the webhook is down
   changes simply stay batched
+- 🪶 **Light or heavy model** — the feather/dumbbell toggle picks how much
+  thinking your agent should spend: light for quick text tweaks (fast,
+  cheap model), heavy when instructions need real reasoning; the choice
+  rides along as a `model:` line in the report and a field in the webhook
+  payload, and the `/slop-off` skill routes accordingly
 - 🔔 **On-page toast** — a confirmation appears when the report is copied
 - 💾 **Never loses a report** — if copying fails (e.g. you ended edit mode on
   a `chrome://` page), the report is kept and copied on your next click

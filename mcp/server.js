@@ -42,6 +42,7 @@ const pushReport = (entry) => {
     id: `${Date.now()}-${queue.length}`,
     ts: new Date().toISOString(),
     count: entry.count ?? null,
+    model: entry.model || null,
     urls: entry.urls || [],
     report: String(entry.report || ''),
     consumed: false,
@@ -118,7 +119,9 @@ const TOOLS = [
 
 const asText = (r) =>
   r
-    ? `# Edit report ${r.id} (${r.ts}, ${r.count ?? '?'} edits)\n\n${r.report}`
+    ? `# Edit report ${r.id} (${r.ts}, ${r.count ?? '?'} edits${
+        r.model ? `, model: ${r.model}` : ''
+      })\n\n${r.report}`
     : 'No report available.';
 
 async function callTool(name, args = {}) {
@@ -129,7 +132,10 @@ async function callTool(name, args = {}) {
     const tail = processed ? `\n(${processed} processed report(s) kept, last 50 total)` : '';
     return fresh.length
       ? fresh
-          .map((r) => `${r.id}  ${r.ts}  ${r.count ?? '?'} edits  ${(r.urls || []).join(', ')}`)
+          .map(
+            (r) =>
+              `${r.id}  ${r.ts}  ${r.count ?? '?'} edits  ${r.model || '-'}  ${(r.urls || []).join(', ')}`
+          )
           .join('\n') + tail
       : 'No new reports.' + tail;
   }
