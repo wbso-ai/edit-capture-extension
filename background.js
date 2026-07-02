@@ -360,6 +360,26 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       await chrome.storage.session.set({ [sectionsKey(tabId)]: sections });
     })();
   }
+
+  if (msg.type === 'checkBridge') {
+    // Liveness ping for the HUD's status lamp: the bridge answers any GET
+    // with 200, so a reachable webhook means the MCP server is running.
+    (async () => {
+      const { webhookUrl } = await chrome.storage.sync.get({ webhookUrl: 'http://localhost:8931' });
+      const url = webhookUrl.trim();
+      if (!url) return sendResponse({ configured: false, ok: false });
+      try {
+        const ctl = new AbortController();
+        const timer = setTimeout(() => ctl.abort(), 2000);
+        const res = await fetch(url, { method: 'GET', signal: ctl.signal });
+        clearTimeout(timer);
+        sendResponse({ configured: true, ok: res.ok });
+      } catch (e) {
+        sendResponse({ configured: true, ok: false });
+      }
+    })();
+    return true;
+  }
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => {

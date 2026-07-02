@@ -222,7 +222,7 @@ In a Claude Code session in the project whose site you're editing:
 
 - `/slop-off` — background loop: a cheap watcher subagent waits for reports
   while your main session stays free for other work. Per report you get two
-  status lines (*📥 3 wijzigingen ontvangen* → *✅ 3 wijzigingen toegepast —
+  status lines (*📥 3 change(s) received* → *✅ 3 change(s) applied —
   files*), and the actual work is delegated to a subagent matching the
   report's `model:` line (light → Haiku, heavy → Opus). Say *stop* to end
   the loop

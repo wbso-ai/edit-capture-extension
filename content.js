@@ -436,7 +436,13 @@
     'border-left:4px solid #FBB734;border-radius:10px;padding:10px 16px;' +
     'font:600 13px/1.4 -apple-system,"Segoe UI",sans-serif;box-shadow:0 6px 24px rgba(0,30,53,.35);';
 
+  // Only one toast at a time: a new one replaces the previous instead of
+  // stacking on the same spot when you click a few times in a row.
+  let toastEl = null;
+  let toastTimer = 0;
   const miniToast = (text) => {
+    clearTimeout(toastTimer);
+    toastEl?.remove();
     const t = document.createElement('div');
     t.setAttribute('data-ec-ui', '');
     t.textContent = text;
@@ -447,7 +453,11 @@
     }
     t.style.cssText = TOAST_CSS + `bottom:${bottom}px;`;
     (document.body || document.documentElement).appendChild(t);
-    setTimeout(() => t.remove(), 2600);
+    toastEl = t;
+    toastTimer = setTimeout(() => {
+      t.remove();
+      if (toastEl === t) toastEl = null;
+    }, 2600);
   };
 
 
@@ -942,6 +952,7 @@
   let lastEsc = 0;
   const onEscDiscard = (e) => {
     if (!active || e.key !== 'Escape') return;
+    if (helpEl) return closeHelp(); // Esc closes the shortcut sheet first, never discards
     if (e.target.closest && e.target.closest('[data-ec-ui]')) return; // Esc in our editors just closes them
     const now = Date.now();
     if (now - lastEsc < 450) {
@@ -1050,7 +1061,199 @@
   let modeBtn = null;
   let modelBtn = null;
   let submitBtn = null;
+  let tipEl = null;
+  let helpEl = null;
   let panelOpen = false;
+
+  // Custom tooltip: native `title` popups appear at the cursor and cover the
+  // very buttons they describe (and can fall off-screen down here in the
+  // bottom-right). Ours floats centered just above the hovered control.
+  const showTip = (target, text) => {
+    if (!tipEl) {
+      tipEl = document.createElement('div');
+      tipEl.setAttribute('data-ec-ui', '');
+      tipEl.contentEditable = 'false';
+      tipEl.style.cssText =
+        'position:fixed;z-index:2147483647;pointer-events:none;background:#001E35;color:#fff;' +
+        'padding:6px 9px;border-radius:7px;max-width:220px;white-space:normal;' +
+        'font:500 12px/1.35 -apple-system,"Segoe UI",sans-serif;box-shadow:0 6px 20px rgba(0,30,53,.35);' +
+        'opacity:0;transition:opacity .12s;';
+      (document.body || document.documentElement).appendChild(tipEl);
+    }
+    tipEl.textContent = text;
+    tipEl.style.display = 'block';
+    const r = target.getBoundingClientRect();
+    const tr = tipEl.getBoundingClientRect(); // measured with text in place
+    const left = Math.max(8, Math.min(r.left + r.width / 2 - tr.width / 2, innerWidth - tr.width - 8));
+    tipEl.style.left = left + 'px';
+    tipEl.style.top = Math.max(8, r.top - tr.height - 8) + 'px';
+    tipEl.style.opacity = '1';
+  };
+  const hideTip = () => {
+    if (tipEl) tipEl.style.opacity = '0';
+  };
+  const attachTip = (el, text) => {
+    el.addEventListener('mouseenter', () => showTip(el, text));
+    el.addEventListener('mouseleave', hideTip);
+  };
+
+  // ── Shortcut cheat-sheet overlay (the ? button) ─────────────────────
+  const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform || '');
+  const CMD = IS_MAC ? '⌘' : 'Ctrl';
+  const CTRL = IS_MAC ? '⌃' : 'Ctrl';
+  const REPO_URL = 'https://github.com/wbso-ai/slop-off';
+  // Mouse gestures render as soft blue pills; real keys as keycaps.
+  const MOUSE = new Set(['Click', 'Hover', 'Drag']);
+  const HELP_SECTIONS = [
+    ['Editing', [
+      [['Click'], 'any text or element — then just type'],
+      [[CMD, 'Click'], 'activate a button instead of editing it'],
+      [['Alt', 'Click'], 'edit a collapsed disclosure label'],
+    ]],
+    ['Notes', [
+      [[CTRL, 'Click'], 'attach a note (hold ' + CTRL + ' to aim)'],
+      [['Tab'], 'next annotated element · ⇧ for previous'],
+      [['Enter'], 'save the note · ⇧ Enter for a new line'],
+    ]],
+    ['Links & fields', [
+      [['Hover'], 'reveal the URL / placeholder editor'],
+      [[CMD, 'Click'], 'follow a link — the session continues'],
+    ]],
+    ['Session', [
+      [[CMD, 'Enter'], 'send pending changes now'],
+      [['Esc', 'Esc'], 'discard everything & end the session'],
+      [['Esc'], 'close an open editor'],
+    ]],
+  ];
+
+  const SVG_GITHUB =
+    '<svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">' +
+    '<path d="M12 1.5A10.5 10.5 0 0 0 8.68 22c.53.1.72-.23.72-.5v-1.9c-2.93.64-3.55-1.25-3.55-1.25-.48-1.22-1.17-1.55-1.17-1.55-.96-.65.07-.64.07-.64 1.06.08 1.62 1.09 1.62 1.09.94 1.62 2.47 1.15 3.07.88.1-.68.37-1.15.67-1.42-2.34-.27-4.8-1.17-4.8-5.2 0-1.15.41-2.09 1.09-2.83-.11-.27-.47-1.34.1-2.8 0 0 .88-.28 2.9 1.08a10 10 0 0 1 5.28 0c2-1.36 2.9-1.08 2.9-1.08.57 1.46.21 2.53.1 2.8.68.74 1.09 1.68 1.09 2.83 0 4.04-2.47 4.93-4.82 5.19.38.33.72.97.72 1.96v2.9c0 .28.19.61.73.5A10.5 10.5 0 0 0 12 1.5Z"/></svg>';
+
+  let helpPingTimer = 0;
+  const closeHelp = () => {
+    clearInterval(helpPingTimer);
+    helpPingTimer = 0;
+    helpEl?.remove();
+    helpEl = null;
+  };
+
+  const paintLamp = (state) => {
+    if (!helpEl) return;
+    const lamp = helpEl.querySelector('[data-ec-lamp]');
+    const txt = helpEl.querySelector('[data-ec-lamptext]');
+    if (!lamp || !txt) return;
+    const set = (bg, glow, color, label) => {
+      lamp.style.background = bg;
+      lamp.style.boxShadow = glow;
+      txt.style.color = color;
+      txt.textContent = label;
+    };
+    if (state === 'ok') set('#22C55E', '0 0 0 3px rgba(34,197,94,.22)', '#15803D', 'Connected to the agent');
+    else if (state === 'checking') set('#FBB734', '0 0 0 3px rgba(251,183,52,.22)', '#B45309', 'Checking connection…');
+    else if (state === 'none') set('#CBD5E1', 'none', '#94A3B8', 'No webhook configured');
+    else set('#EF4444', 'none', '#B91C1C', 'Agent bridge not reachable');
+  };
+
+  const pingBridge = () => {
+    try {
+      chrome.runtime.sendMessage({ type: 'checkBridge' }, (resp) => {
+        void chrome.runtime.lastError;
+        if (!helpEl) return;
+        paintLamp(!resp ? 'off' : !resp.configured ? 'none' : resp.ok ? 'ok' : 'off');
+      });
+    } catch (e) {
+      paintLamp('off');
+    }
+  };
+
+  const toggleHelp = () => {
+    if (helpEl) return closeHelp();
+    const keycap = (k) =>
+      MOUSE.has(k)
+        ? `<span style="display:inline-flex;align-items:center;height:23px;padding:0 9px;border-radius:7px;` +
+          `background:#EAF2FB;border:1px solid #CDE0F3;color:#195FA4;` +
+          `font:600 11px/1 -apple-system,'Segoe UI',sans-serif;">${k.toLowerCase()}</span>`
+        : `<kbd style="display:inline-flex;align-items:center;justify-content:center;min-width:23px;height:23px;` +
+          `padding:0 6px;border-radius:7px;background:linear-gradient(180deg,#fff,#EEF2F7);` +
+          `border:1px solid #CBD5E1;border-bottom-color:#AEBACB;box-shadow:0 1px 0 rgba(0,30,53,.05);` +
+          `font:600 12px/1 ui-monospace,SFMono-Regular,Menlo,monospace;color:#001E35;">${k}</kbd>`;
+    const rowsFor = (rows) =>
+      rows
+        .map(
+          ([keys, desc], i) =>
+            `<div style="display:grid;grid-template-columns:1fr auto;align-items:center;gap:14px;` +
+            `padding:9px 0;${i ? 'border-top:1px solid #EDF1F6;' : ''}">` +
+            `<div style="color:#475569;font-size:12.5px;line-height:1.35;">${desc}</div>` +
+            `<div style="display:flex;gap:5px;align-items:center;justify-self:end;">` +
+            keys.map(keycap).join('') +
+            `</div></div>`
+        )
+        .join('');
+    const cols = HELP_SECTIONS.map(
+      ([title, rows]) =>
+        `<section style="background:#F8FAFC;border:1px solid #EDF1F6;border-radius:13px;padding:12px 16px 6px;">` +
+        `<div style="font:700 11px/1 -apple-system,'Segoe UI',sans-serif;letter-spacing:.09em;` +
+        `text-transform:uppercase;color:#195FA4;margin-bottom:2px;">${title}</div>` +
+        `${rowsFor(rows)}</section>`
+    ).join('');
+
+    helpEl = document.createElement('div');
+    helpEl.setAttribute('data-ec-ui', '');
+    helpEl.contentEditable = 'false';
+    helpEl.style.cssText =
+      'position:fixed;inset:0;z-index:2147483647;display:flex;align-items:center;justify-content:center;' +
+      'background:rgba(0,30,53,.5);backdrop-filter:blur(3px);-webkit-backdrop-filter:blur(3px);' +
+      'font:13px/1.4 -apple-system,"Segoe UI",sans-serif;';
+    helpEl.innerHTML =
+      `<div style="background:#fff;border-radius:18px;box-shadow:0 30px 80px rgba(0,30,53,.45);` +
+      `width:min(600px,calc(100vw - 40px));max-height:calc(100vh - 40px);overflow:auto;padding:22px 24px 20px;">` +
+      // header
+      `<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:16px;">` +
+      `<div><div style="font:800 17px/1.1 -apple-system,'Segoe UI',sans-serif;color:#001E35;">Shortcuts</div>` +
+      `<div style="color:#94A3B8;font-size:12px;margin-top:3px;">Edit any page, then ship the diff to your agent.</div></div>` +
+      `<button data-ec-close="1" aria-label="Close" style="flex:none;border:none;background:#F1F5F9;color:#64748B;` +
+      `width:30px;height:30px;border-radius:999px;cursor:pointer;font-size:15px;line-height:1;">✕</button></div>` +
+      // grid of sections
+      `<div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;">${cols}</div>` +
+      // footer: status lamp + github + esc hint
+      `<div style="margin-top:18px;padding-top:14px;border-top:1px solid #EEF2F7;display:flex;` +
+      `align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">` +
+      `<div style="display:flex;align-items:center;gap:8px;">` +
+      `<span data-ec-lamp style="width:9px;height:9px;border-radius:50%;background:#FBB734;flex:none;` +
+      `transition:background .2s,box-shadow .2s;"></span>` +
+      `<span data-ec-lamptext style="font-size:12px;font-weight:600;color:#B45309;">Checking connection…</span></div>` +
+      `<div style="display:flex;align-items:center;gap:14px;color:#94A3B8;font-size:12px;">` +
+      `<span>Press <kbd style="padding:2px 6px;background:#F1F5F9;border:1px solid #CBD5E1;border-radius:5px;` +
+      `font:600 11px/1 ui-monospace,monospace;color:#475569;">Esc</kbd> to close</span>` +
+      `<a data-ec-gh href="${REPO_URL}" target="_blank" rel="noopener noreferrer" ` +
+      `style="display:inline-flex;align-items:center;gap:5px;color:#64748B;text-decoration:none;font-weight:600;">` +
+      `${SVG_GITHUB}<span>GitHub</span></a></div></div></div>`;
+    helpEl.addEventListener('click', (e) => {
+      if (e.target.closest('[data-ec-gh]')) {
+        // designMode can swallow a plain link click; open it ourselves.
+        e.preventDefault();
+        window.open(REPO_URL, '_blank', 'noopener');
+        return;
+      }
+      if (e.target === helpEl || e.target.closest('[data-ec-close]')) closeHelp();
+    });
+    // Own the keyboard while open: Esc closes the sheet without reaching the
+    // double-Esc discard handler, and typing can't leak into the page.
+    helpEl.addEventListener(
+      'keydown',
+      (e) => {
+        e.stopPropagation();
+        if (e.key === 'Escape') closeHelp();
+      },
+      true
+    );
+    (document.body || document.documentElement).appendChild(helpEl);
+    helpEl.querySelector('[data-ec-close]')?.focus();
+    paintLamp('checking');
+    pingBridge();
+    helpPingTimer = setInterval(pingBridge, 4000);
+  };
 
   // Current after-state of a tracked element, view-safe: while a view is
   // shown, the DOM holds view content, so read the stored snapshot instead.
@@ -1121,7 +1324,6 @@
     }
     const discardBtn = document.createElement('button');
     discardBtn.textContent = '✕';
-    discardBtn.title = 'Discard all changes (double-Esc)';
     discardBtn.style.cssText =
       'background:#001E35;color:#94A3B8;border:none;border-radius:999px;width:30px;height:30px;' +
       'cursor:pointer;font:600 13px/1 -apple-system,"Segoe UI",sans-serif;flex:none;' +
@@ -1129,37 +1331,55 @@
     discardBtn.addEventListener('mouseenter', () => (discardBtn.style.color = '#F87171'));
     discardBtn.addEventListener('mouseleave', () => (discardBtn.style.color = '#94A3B8'));
     discardBtn.addEventListener('click', discardSession);
-    modeBtn = document.createElement('button');
-    modeBtn.style.cssText =
-      'border:none;border-radius:999px;width:30px;height:30px;cursor:pointer;flex:none;' +
-      'font:600 13px/1 -apple-system,"Segoe UI",sans-serif;box-shadow:0 4px 16px rgba(0,30,53,.3);';
-    modeBtn.addEventListener('click', () => {
-      instantMode = !instantMode;
+    attachTip(discardBtn, 'Discard all changes (double-Esc)');
+    // ── Segmented toggles: both options visible, active one filled dark on
+    // white — same shape as the view bar so on/off reads at a glance.
+    const makeSegBtn = (svg, tip, first) => {
+      const seg = document.createElement('button');
+      seg.type = 'button';
+      seg.innerHTML = svg;
+      attachTip(seg, tip);
+      seg.style.cssText =
+        'border:none;background:transparent;width:32px;height:28px;cursor:pointer;flex:none;' +
+        'display:flex;align-items:center;justify-content:center;color:#94A3B8;' +
+        'transition:background .12s,color .12s;' +
+        (first ? '' : 'border-left:1px solid #E2E8F0;');
+      return seg;
+    };
+    // modeBtn is a 2-segment pill: [ 📦 batch | ⚡ instant ]
+    modeBtn = document.createElement('div');
+    modeBtn.style.cssText = SEG_PILL;
+    const batchSeg = makeSegBtn(SVG_BOX, 'Batch: changes ship when you end the session', true);
+    const instantSeg = makeSegBtn(SVG_BOLT, 'Instant: each change is sent as soon as you pause', false);
+    const setMode = (next) => {
+      if (instantMode === next) return;
+      instantMode = next;
       try {
         chrome.storage.sync.set({ instant: instantMode });
       } catch (e) {}
       paintModeBtn();
-      miniToast(instantMode ? '⚡ Instant: changes are sent as soon as you pause' : '📦 Batch: changes ship when you end the session');
       if (instantMode) scheduleInstantFlush();
-    });
-    modelBtn = document.createElement('button');
-    modelBtn.style.cssText =
-      'border:none;border-radius:999px;width:30px;height:30px;cursor:pointer;flex:none;' +
-      'display:flex;align-items:center;justify-content:center;box-shadow:0 4px 16px rgba(0,30,53,.3);';
-    modelBtn.addEventListener('click', () => {
-      heavyModel = !heavyModel;
+    };
+    batchSeg.addEventListener('click', () => setMode(false));
+    instantSeg.addEventListener('click', () => setMode(true));
+    modeBtn.append(batchSeg, instantSeg);
+    // modelBtn is a 2-segment pill: [ 🪶 light | 🏋 heavy ]
+    modelBtn = document.createElement('div');
+    modelBtn.style.cssText = SEG_PILL;
+    const lightSeg = makeSegBtn(SVG_FEATHER, 'Light model: fast and cheap', true);
+    const heavySeg = makeSegBtn(SVG_DUMBBELL, 'Heavy model: for changes that need real thinking', false);
+    const setModel = (next) => {
+      if (heavyModel === next) return;
+      heavyModel = next;
       try {
         chrome.storage.sync.set({ model: heavyModel ? 'heavy' : 'light' });
       } catch (e) {}
       paintModelBtn();
-      miniToast(
-        heavyModel
-          ? '🏋 Heavy model: for changes that need real thinking'
-          : '🪶 Light model: fast and cheap'
-      );
-    });
+    };
+    lightSeg.addEventListener('click', () => setModel(false));
+    heavySeg.addEventListener('click', () => setModel(true));
+    modelBtn.append(lightSeg, heavySeg);
     submitBtn = document.createElement('button');
-    submitBtn.title = 'Send pending changes to the agent now (⌘⏎ — session keeps going)';
     submitBtn.innerHTML =
       '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
       'stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
@@ -1169,9 +1389,20 @@
       'display:none;align-items:center;justify-content:center;background:#195FA4;color:#fff;' +
       'box-shadow:0 4px 16px rgba(0,30,53,.3);';
     submitBtn.addEventListener('click', () => flushNow(true));
+    attachTip(submitBtn, 'Send pending changes to the agent now (⌘⏎ — session keeps going)');
+    // Help: opens the shortcut cheat-sheet overlay.
+    const helpBtn = document.createElement('button');
+    helpBtn.type = 'button';
+    helpBtn.textContent = '?';
+    helpBtn.style.cssText =
+      'width:30px;height:30px;border-radius:999px;cursor:pointer;flex:none;background:#fff;' +
+      'border:1px solid #CBD5E1;color:#001E35;font:700 15px/1 -apple-system,"Segoe UI",sans-serif;' +
+      'box-shadow:0 4px 16px rgba(0,30,53,.2);';
+    helpBtn.addEventListener('click', toggleHelp);
+    attachTip(helpBtn, 'Keyboard & mouse shortcuts');
     const chipRow = document.createElement('div');
     chipRow.style.cssText = 'display:flex;gap:8px;align-items:center;';
-    chipRow.append(modeBtn, modelBtn, chipEl, submitBtn, discardBtn);
+    chipRow.append(helpBtn, modeBtn, modelBtn, chipEl, submitBtn, discardBtn);
     paintModeBtn();
     paintModelBtn();
     panelEl.append(listEl, viewBarEl, chipRow);
@@ -1508,17 +1739,20 @@
     '<path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/>' +
     '<path d="M3.3 7 12 12l8.7-5"/><path d="M12 22V12"/></svg>';
 
+  // White segmented-pill shell shared by the mode and model toggles.
+  const SEG_PILL =
+    'display:inline-flex;align-items:center;height:30px;background:#fff;border:1px solid #CBD5E1;' +
+    'border-radius:999px;overflow:hidden;flex:none;box-shadow:0 4px 16px rgba(0,30,53,.2);';
+  // Fill the active segment dark, dim the inactive one — the on/off tell.
+  const paintSeg = (seg, on) => {
+    seg.style.background = on ? '#001E35' : 'transparent';
+    seg.style.color = on ? '#fff' : '#94A3B8';
+  };
+
   const paintModeBtn = () => {
     if (!modeBtn) return;
-    modeBtn.innerHTML = instantMode ? SVG_BOLT : SVG_BOX;
-    modeBtn.style.display = 'flex';
-    modeBtn.style.alignItems = 'center';
-    modeBtn.style.justifyContent = 'center';
-    modeBtn.title = instantMode
-      ? 'Instant: each change is sent to the agent as soon as you pause — click for batch'
-      : 'Batch: changes ship when you end the session — click for instant';
-    modeBtn.style.background = instantMode ? '#FBB734' : '#001E35';
-    modeBtn.style.color = instantMode ? '#fff' : '#94A3B8';
+    paintSeg(modeBtn.children[0], !instantMode); // batch
+    paintSeg(modeBtn.children[1], instantMode); // instant
   };
 
   const SVG_FEATHER =
@@ -1536,17 +1770,17 @@
 
   const paintModelBtn = () => {
     if (!modelBtn) return;
-    modelBtn.innerHTML = heavyModel ? SVG_DUMBBELL : SVG_FEATHER;
-    modelBtn.title = heavyModel
-      ? 'Heavy model: deep thinking — click for light'
-      : 'Light model: fast and cheap — click for heavy';
-    modelBtn.style.background = heavyModel ? '#195FA4' : '#001E35';
-    modelBtn.style.color = heavyModel ? '#fff' : '#94A3B8';
+    paintSeg(modelBtn.children[0], !heavyModel); // light
+    paintSeg(modelBtn.children[1], heavyModel); // heavy
   };
 
   const removePanel = () => {
+    clearInterval(helpPingTimer);
+    helpPingTimer = 0;
     panelEl?.remove();
-    panelEl = chipEl = listEl = viewBarEl = modeBtn = modelBtn = submitBtn = null;
+    tipEl?.remove();
+    helpEl?.remove();
+    panelEl = chipEl = listEl = viewBarEl = modeBtn = modelBtn = submitBtn = tipEl = helpEl = null;
     panelOpen = false;
   };
 
