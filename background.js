@@ -8,7 +8,6 @@ const DEFAULT_PROMPT = [
 
 const activeKey = (tabId) => `active_${tabId}`;
 const sectionsKey = (tabId) => `sections_${tabId}`;
-const PENDING_KEY = 'pending_report';
 const HISTORY_KEY = 'history';
 const HISTORY_MAX = 20;
 
@@ -86,67 +85,43 @@ function buildReport(promptPrefix, sections, fallbackUrl, model) {
   return parts.join('\n').trimEnd() + '\n';
 }
 
-// Runs in the page: copy the report to the clipboard and show a toast.
-function copyReportAndToast(report, message) {
-  const showToast = (text) => {
-    const toast = document.createElement('div');
-    toast.textContent = text;
-    Object.assign(toast.style, {
-      position: 'fixed',
-      right: '20px',
-      bottom: '20px',
-      zIndex: '2147483647',
-      background: '#001E35',
-      color: '#fff',
-      borderLeft: '4px solid #FBB734',
-      borderRadius: '10px',
-      padding: '12px 18px',
-      font: '600 14px/1.4 "Open Sans", -apple-system, "Segoe UI", sans-serif',
-      boxShadow: '0 6px 24px rgba(0, 30, 53, 0.35)',
-      opacity: '0',
-      transition: 'opacity 0.25s',
-    });
-    document.documentElement.appendChild(toast);
-    requestAnimationFrame(() => (toast.style.opacity = '1'));
-    setTimeout(() => {
-      toast.style.opacity = '0';
-      setTimeout(() => toast.remove(), 300);
-    }, 2500);
-  };
-
-  const copyViaTextarea = () => {
-    const ta = document.createElement('textarea');
-    ta.value = report;
-    ta.style.position = 'fixed';
-    ta.style.opacity = '0';
-    document.body.appendChild(ta);
-    ta.focus();
-    ta.select();
-    const ok = document.execCommand('copy');
-    ta.remove();
-    return ok;
-  };
-
-  return navigator.clipboard
-    .writeText(report)
-    .then(() => true)
-    .catch(() => copyViaTextarea())
-    .then((ok) => {
-      if (ok) showToast(message);
-      return ok;
-    });
+// Runs in the page: show a status toast (gold accent).
+function showStatusToast(message) {
+  const toast = document.createElement('div');
+  toast.textContent = message;
+  Object.assign(toast.style, {
+    position: 'fixed',
+    right: '20px',
+    bottom: '20px',
+    zIndex: '2147483647',
+    background: '#001E35',
+    color: '#fff',
+    borderLeft: '4px solid #FBB734',
+    borderRadius: '10px',
+    padding: '12px 18px',
+    font: '600 14px/1.4 "Open Sans", -apple-system, "Segoe UI", sans-serif',
+    boxShadow: '0 6px 24px rgba(0, 30, 53, 0.35)',
+    opacity: '0',
+    transition: 'opacity 0.25s',
+  });
+  document.documentElement.appendChild(toast);
+  requestAnimationFrame(() => (toast.style.opacity = '1'));
+  setTimeout(() => {
+    toast.style.opacity = '0';
+    setTimeout(() => toast.remove(), 300);
+  }, 2500);
 }
 
-async function copyInTab(tabId, report, message) {
+async function toastIn(tabId, message) {
   try {
-    const [{ result }] = await chrome.scripting.executeScript({
+    await chrome.scripting.executeScript({
       target: { tabId },
-      func: copyReportAndToast,
-      args: [report, message],
+      func: showStatusToast,
+      args: [message],
     });
-    return Boolean(result);
+    return true;
   } catch (e) {
-    return false;
+    return false; // page disallows injection; the badge still signals
   }
 }
 
@@ -165,28 +140,9 @@ chrome.action.onClicked.addListener(async (tab) => {
   const tabId = tab.id;
 
   if (!(await isActive(tabId))) {
-    // A report that couldn't be copied earlier (e.g. edit mode was ended on
-    // a chrome:// page) takes priority: copy it now instead of starting a
-    // new edit session.
-    const { [PENDING_KEY]: pending } = await chrome.storage.session.get(PENDING_KEY);
-    if (pending) {
-      const copied = await copyInTab(
-        tabId,
-        pending.report,
-        `Saved report copied — ${pending.count} edit${pending.count === 1 ? '' : 's'}`
-      );
-      if (copied) {
-        await chrome.storage.session.remove(PENDING_KEY);
-        flashBadge(tabId, `${pending.count}`, '#195FA4');
-      } else {
-        flashBadge(tabId, '✗', '#C2410C');
-      }
-      return;
-    }
-
     // ── Edit mode ON ───────────────────────────────────────────────
     try {
-      await chrome.scripting.executeScript({ target: { tabId }, files: ['content.js'] });
+      await chrome.scripting.executeScript({ target: { tabId }, files: ['panes.js', 'content.js'] });
     } catch (e) {
       // Pages that disallow injection (chrome://, web store, etc.)
       flashBadge(tabId, '✗', '#C2410C');
@@ -200,7 +156,7 @@ chrome.action.onClicked.addListener(async (tab) => {
     return;
   }
 
-  // ── Edit mode OFF: collect, build report, copy ───────────────────
+  // ── Edit mode OFF: collect, build report, send to the agent ──────
   let finalPage = null;
   try {
     finalPage = await chrome.tabs.sendMessage(tabId, { type: 'finalize' });
@@ -215,6 +171,135 @@ chrome.action.onClicked.addListener(async (tab) => {
 
   const withContent = sections.filter((s) => sectionSize(s) > 0);
   await finalizeReport(tabId, withContent, tab.url || '');
+});
+
+// ── Two-way status: poll the bridge after a report is sent ───────────
+// Shows the number of pending reports on the (global) action badge and
+// injects a toast when the agent calls notify_browser. Per-tab badges
+// (REC, flashes) override the global pending count, which is what we want.
+const POLL_KEY = 'poll_state'; // { until, lastEventId, tabId }
+const POLL_WINDOW_MS = 15 * 60 * 1000;
+let pollTimer = 0;
+
+// Runs in the page: agent status toast (green accent, replaces the previous).
+// Clicking it opens the settings page with the notification history.
+function showAgentToast(message) {
+  document.getElementById('slop-off-agent-toast')?.remove();
+  const toast = document.createElement('div');
+  toast.id = 'slop-off-agent-toast';
+  toast.textContent = `🤖 ${message}`;
+  toast.title = 'Click to see all agent notifications';
+  toast.style.cursor = 'pointer';
+  toast.addEventListener('click', () => {
+    try {
+      chrome.runtime.sendMessage({ type: 'openNotifications' });
+    } catch (e) {}
+    toast.remove();
+  });
+  Object.assign(toast.style, {
+    position: 'fixed',
+    right: '20px',
+    bottom: '20px',
+    zIndex: '2147483647',
+    maxWidth: '360px',
+    background: '#001E35',
+    color: '#fff',
+    borderLeft: '4px solid #16A37B',
+    borderRadius: '10px',
+    padding: '12px 18px',
+    font: '600 13px/1.4 "Open Sans", -apple-system, "Segoe UI", sans-serif',
+    whiteSpace: 'pre-line',
+    boxShadow: '0 6px 24px rgba(0, 30, 53, 0.35)',
+    opacity: '0',
+    transition: 'opacity 0.25s',
+  });
+  document.documentElement.appendChild(toast);
+  requestAnimationFrame(() => (toast.style.opacity = '1'));
+  setTimeout(() => {
+    toast.style.opacity = '0';
+    setTimeout(() => toast.remove(), 300);
+  }, 6000);
+}
+
+async function toastInTab(tabId, message) {
+  const tryTab = async (id) => {
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId: id },
+        func: showAgentToast,
+        args: [message],
+      });
+      return true;
+    } catch (e) {
+      return false; // tab gone or uninjectable
+    }
+  };
+  if (tabId && (await tryTab(tabId))) return;
+  // Fall back to whatever tab the user is looking at.
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (tab?.id && tab.id !== tabId) await tryTab(tab.id);
+}
+
+async function fetchStatus() {
+  const { webhookUrl } = await chrome.storage.sync.get({ webhookUrl: 'http://localhost:8931' });
+  const url = webhookUrl.trim();
+  if (!url) return null;
+  try {
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), 2000);
+    const res = await fetch(url.replace(/\/$/, '') + '/status', { signal: ctl.signal });
+    clearTimeout(timer);
+    if (!res.ok) return null;
+    return await res.json(); // { pending, events }
+  } catch (e) {
+    return null; // old bridge (non-JSON) or unreachable
+  }
+}
+
+async function pollStatus() {
+  const { [POLL_KEY]: st } = await chrome.storage.session.get(POLL_KEY);
+  if (!st || Date.now() > st.until) {
+    clearInterval(pollTimer);
+    pollTimer = 0;
+    chrome.action.setBadgeText({ text: '' });
+    return;
+  }
+  const status = await fetchStatus();
+  if (!status) return;
+  await chrome.action.setBadgeBackgroundColor({ color: '#B45309' });
+  await chrome.action.setBadgeText({ text: status.pending ? String(status.pending) : '' });
+  const fresh = (status.events || []).filter((ev) => ev.id > (st.lastEventId || 0));
+  if (fresh.length || status.pending) {
+    st.until = Date.now() + POLL_WINDOW_MS; // activity keeps the poll alive
+    if (fresh.length) st.lastEventId = fresh[fresh.length - 1].id;
+    await chrome.storage.session.set({ [POLL_KEY]: st });
+  }
+  if (fresh.length) {
+    // Keep a readable history on the settings page (newest first, last 50).
+    const { notifications = [] } = await chrome.storage.local.get('notifications');
+    notifications.unshift(...fresh.map((ev) => ({ ts: ev.ts, message: ev.message })).reverse());
+    await chrome.storage.local.set({ notifications: notifications.slice(0, 50) });
+  }
+  for (const ev of fresh) await toastInTab(st.tabId, ev.message);
+}
+
+async function startPolling(tabId) {
+  const { [POLL_KEY]: st } = await chrome.storage.session.get(POLL_KEY);
+  await chrome.storage.session.set({
+    [POLL_KEY]: {
+      until: Date.now() + POLL_WINDOW_MS,
+      // Baseline now: never toast events from before this session's report.
+      lastEventId: st?.lastEventId || Date.now(),
+      tabId: tabId ?? st?.tabId,
+    },
+  });
+  if (!pollTimer) pollTimer = setInterval(pollStatus, 1000);
+  pollStatus();
+}
+
+// Worker restarted mid-window (MV3): resume the poll.
+chrome.storage.session.get(POLL_KEY).then(({ [POLL_KEY]: st }) => {
+  if (st && Date.now() < st.until && !pollTimer) pollTimer = setInterval(pollStatus, 1000);
 });
 
 // POST the report to the configured webhook (e.g. the MCP bridge).
@@ -234,31 +319,31 @@ async function postWebhook(report, count, sections, model) {
   }
 }
 
-// Build the final report, save it to history, copy it in the tab.
+// Build the final report, save it to history, send it to the agent.
+// No clipboard: the webhook is the delivery channel; history is the backup.
 async function finalizeReport(tabId, sections, fallbackUrl) {
   const { prompt, model } = await chrome.storage.sync.get({ prompt: DEFAULT_PROMPT, model: 'light' });
   const report = buildReport(prompt, sections, fallbackUrl, model);
   const count = sections.reduce((n, s) => n + sectionSize(s), 0);
-  let sent = null;
-  if (count > 0) {
-    await saveHistory(report, count, sections);
-    sent = await postWebhook(report, count, sections, model);
+  if (!count) {
+    await toastIn(tabId, 'No changes — nothing sent');
+    chrome.action.setBadgeText({ tabId, text: '' });
+    return;
   }
-
-  // Only confirm on success; a failed POST (no bridge running) falls back to
-  // the clipboard silently, so it never nags users who don't run the agent.
-  const suffix = sent === true ? ' · sent to agent' : '';
-  const copied = await copyInTab(
-    tabId,
-    report,
-    `Report copied — ${count} edit${count === 1 ? '' : 's'}${suffix}`
-  );
-  if (copied) {
+  await saveHistory(report, count, sections);
+  const sent = await postWebhook(report, count, sections, model);
+  if (sent === true) {
+    await startPolling(tabId);
+    await toastIn(tabId, `Sent to agent — ${count} edit${count === 1 ? '' : 's'}`);
     flashBadge(tabId, `${count}`, '#195FA4');
   } else {
-    // Keep the report; the next icon click copies it from any normal page.
-    await chrome.storage.session.set({ [PENDING_KEY]: { report, count } });
-    flashBadge(tabId, '💾', '#C2410C');
+    await toastIn(
+      tabId,
+      sent === null
+        ? '⚠ No webhook configured — report kept in history'
+        : '⚠ Agent bridge unreachable — report kept in history'
+    );
+    flashBadge(tabId, '✗', '#C2410C');
   }
 }
 
@@ -268,7 +353,7 @@ chrome.tabs.onUpdated.addListener(async (tabId, info) => {
   if (info.status !== 'complete') return;
   if (!(await isActive(tabId))) return;
   try {
-    await chrome.scripting.executeScript({ target: { tabId }, files: ['content.js'] });
+    await chrome.scripting.executeScript({ target: { tabId }, files: ['panes.js', 'content.js'] });
     await setBadge(tabId, 'REC', '#DC2626');
   } catch (e) {
     // Landed on a page that disallows injection; edits so far are kept.
@@ -305,6 +390,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       const count = withContent.reduce((n, s) => n + sectionSize(s), 0);
       const sent = await postWebhook(report, count, withContent, model);
       if (!sent) return sendResponse(false);
+      await startPolling(tabId);
       await saveHistory(report, count, withContent);
       await chrome.storage.session.set({ [sectionsKey(tabId)]: [] });
       await setBadge(tabId, `${count}`, '#195FA4');
@@ -361,21 +447,89 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     })();
   }
 
-  if (msg.type === 'checkBridge') {
-    // Liveness ping for the HUD's status lamp: the bridge answers any GET
-    // with 200, so a reachable webhook means the MCP server is running.
+  if (msg.type === 'openNotifications') {
+    // Clicked toast: open the in-page overlay if an edit session is active
+    // in that tab; otherwise fall back to the settings page, on the
+    // notifications tab (#notes).
+    chrome.tabs.sendMessage(tabId, { type: 'showNotifications' }, (ok) => {
+      if (chrome.runtime.lastError || !ok)
+        chrome.tabs.create({ url: chrome.runtime.getURL('options.html#notes') });
+    });
+    return;
+  }
+
+  if (msg.type === 'resendReport') {
+    // Re-apply from the history pane: POST the stored report again.
     (async () => {
       const { webhookUrl } = await chrome.storage.sync.get({ webhookUrl: 'http://localhost:8931' });
       const url = webhookUrl.trim();
-      if (!url) return sendResponse({ configured: false, ok: false });
+      if (!url) return sendResponse(false);
+      try {
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            report: msg.report,
+            count: msg.count,
+            model: null,
+            urls: msg.urls || [],
+          }),
+        });
+        if (res.ok) await startPolling(tabId);
+        sendResponse(res.ok);
+      } catch (e) {
+        sendResponse(false);
+      }
+    })();
+    return true;
+  }
+
+  if (msg.type === 'cancelReport') {
+    // ✕ on a pending report in the HUD: tell the bridge to drop it.
+    (async () => {
+      const { webhookUrl } = await chrome.storage.sync.get({ webhookUrl: 'http://localhost:8931' });
+      const url = webhookUrl.trim();
+      if (!url) return sendResponse(false);
+      try {
+        const res = await fetch(url.replace(/\/$/, '') + '/cancel', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ id: msg.id }),
+        });
+        sendResponse(res.ok);
+      } catch (e) {
+        sendResponse(false);
+      }
+    })();
+    return true;
+  }
+
+  if (msg.type === 'checkBridge') {
+    // Liveness ping for the HUD's status lamp and pending pill: /status
+    // returns JSON on the current bridge; any 200 means the server runs.
+    (async () => {
+      const { webhookUrl } = await chrome.storage.sync.get({ webhookUrl: 'http://localhost:8931' });
+      const url = webhookUrl.trim();
+      if (!url) return sendResponse({ configured: false, ok: false, pending: 0 });
+      const status = await fetchStatus();
+      if (status)
+        return sendResponse({
+          configured: true,
+          ok: true,
+          waiting: Boolean(status.waiting),
+          processing: Boolean(status.processing),
+          pending: status.pending || 0,
+          reports: status.reports || [],
+        });
+      // Older bridge without /status: fall back to the plain-text GET.
       try {
         const ctl = new AbortController();
         const timer = setTimeout(() => ctl.abort(), 2000);
         const res = await fetch(url, { method: 'GET', signal: ctl.signal });
         clearTimeout(timer);
-        sendResponse({ configured: true, ok: res.ok });
+        sendResponse({ configured: true, ok: res.ok, pending: 0 });
       } catch (e) {
-        sendResponse({ configured: true, ok: false });
+        sendResponse({ configured: true, ok: false, pending: 0 });
       }
     })();
     return true;

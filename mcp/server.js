@@ -15,6 +15,17 @@ const PORT = Number(process.env.SLOP_OFF_PORT || 8931);
 const DIR = path.join(os.homedir(), '.slop-off');
 const QUEUE_FILE = path.join(DIR, 'queue.json');
 
+// ── Hot reload (see bottom): a previous incarnation cleans up first ──
+// A Claude session keeps this process alive for its whole lifetime, so after
+// a code update the running server would be stale until a manual /mcp
+// reconnect. Instead we watch our own file and re-require it in place: same
+// process, same stdio pipes — the MCP connection never notices.
+if (global.__slopOffCleanup) {
+  try {
+    global.__slopOffCleanup();
+  } catch (e) {}
+}
+
 fs.mkdirSync(DIR, { recursive: true });
 
 // ── Queue (persisted) ────────────────────────────────────────────────
@@ -35,7 +46,50 @@ const saveQueue = () => {
   fs.writeFileSync(QUEUE_FILE, JSON.stringify(queue, null, 2));
 };
 
+// ── Events for the browser (persisted): [{ id, ts, message }] ────────
+// notify_browser pushes; the extension polls GET /status and toasts new ones.
+const EVENTS_FILE = path.join(DIR, 'events.json');
+let events = [];
+const loadEvents = () => {
+  try {
+    events = JSON.parse(fs.readFileSync(EVENTS_FILE, 'utf8'));
+  } catch (e) {}
+};
+loadEvents();
+const saveEvents = () => {
+  events = events.slice(-20);
+  fs.writeFileSync(EVENTS_FILE, JSON.stringify(events, null, 2));
+};
+
+// ── Waiting heartbeat: is any agent blocked in wait_for_report? ──────
+// The extension shows this as the status dot: "bridge up" is not the same
+// as "an agent is actually waiting for your edits".
+// ponytail: last-writer-wins single file across sessions; fine for a dot.
+const WAIT_FILE = path.join(DIR, 'waiting.json');
+const setWaiting = (ms) => {
+  try {
+    fs.writeFileSync(WAIT_FILE, JSON.stringify({ until: Date.now() + ms }));
+  } catch (e) {}
+};
+const isWaiting = () => {
+  try {
+    return JSON.parse(fs.readFileSync(WAIT_FILE, 'utf8')).until > Date.now();
+  } catch (e) {
+    return false;
+  }
+};
+
 let waiters = []; // pending wait_for_report resolvers
+
+// Lifecycle: queued (fresh) → applying (consumed, done:false) → done.
+// The browser keeps showing a report as pending until the agent calls
+// notify_browser, which completes every in-flight report.
+const consume = (r) => {
+  r.consumed = true;
+  r.done = false;
+  saveQueue();
+};
+const inFlight = () => queue.filter((r) => r.consumed && r.done === false);
 
 const pushReport = (entry) => {
   const report = {
@@ -51,21 +105,62 @@ const pushReport = (entry) => {
   saveQueue();
   const w = waiters.shift();
   if (w) {
-    report.consumed = true;
-    saveQueue();
+    consume(report);
     w(report);
   }
 };
 
 // ── HTTP endpoint for the extension ──────────────────────────────────
-http
-  .createServer((req, res) => {
+const server = http.createServer((req, res) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Headers', 'content-type');
     if (req.method === 'OPTIONS') return res.end();
     if (req.method !== 'POST') {
+      loadQueue(); // another instance may have consumed reports
+      if ((req.url || '').startsWith('/status')) {
+        loadEvents();
+        const fresh = queue.filter((r) => !r.consumed);
+        const busy = inFlight();
+        const asStatus = (phase) => ({ id, ts, count, urls, report }) =>
+          ({ id, ts, count, urls, report, phase });
+        res.setHeader('content-type', 'application/json');
+        return res.end(
+          JSON.stringify({
+            // A report stays pending in the browser until the agent is done.
+            pending: fresh.length + busy.length,
+            waiting: isWaiting(),
+            processing: busy.length > 0,
+            reports: [...busy.map(asStatus('applying')), ...fresh.map(asStatus('queued'))],
+            events: events.slice(-10),
+          })
+        );
+      }
       res.statusCode = 200;
       return res.end(`slop-off bridge: ${queue.length} report(s) queued\n`);
+    }
+    if ((req.url || '').startsWith('/cancel')) {
+      // Extension cancels a queued report: mark it consumed so no agent
+      // picks it up. A report already grabbed by a watcher stays applied.
+      let body = '';
+      req.on('data', (c) => (body += c));
+      req.on('end', () => {
+        loadQueue();
+        let id;
+        try {
+          id = JSON.parse(body).id;
+        } catch (e) {}
+        // Queued: cancel it. Applying: only dismiss it from the pending
+        // view — the agent already has it.
+        const r = queue.find((q) => q.id === id && (!q.consumed || q.done === false));
+        if (r) {
+          r.consumed = true;
+          r.done = true;
+          saveQueue();
+        }
+        res.statusCode = r ? 200 : 404;
+        res.end(r ? 'cancelled' : 'not found');
+      });
+      return;
     }
     let body = '';
     req.on('data', (c) => (body += c));
@@ -78,12 +173,15 @@ http
         res.end('ok');
       }
     });
-  })
-  .on('error', (e) => {
-    // Another instance owns the port; we serve MCP from the shared queue file.
-    process.stderr.write(`slop-off: HTTP listener disabled (${e.code})\n`);
-  })
-  .listen(PORT);
+});
+let bindTries = 0;
+server.on('error', (e) => {
+  // Port owned elsewhere (another session, or our pre-reload self still
+  // closing): retry briefly, then serve MCP from the shared queue file only.
+  if (e.code === 'EADDRINUSE' && bindTries++ < 5) return setTimeout(() => server.listen(PORT), 400);
+  process.stderr.write(`slop-off: HTTP listener disabled (${e.code})\n`);
+});
+server.listen(PORT);
 
 // ── MCP over stdio (JSON-RPC 2.0) ────────────────────────────────────
 const TOOLS = [
@@ -116,6 +214,22 @@ const TOOLS = [
     inputSchema: { type: 'object', properties: {} },
   },
   {
+    name: 'notify_browser',
+    description:
+      'Show a toast notification in the browser running the Slop Off extension. ' +
+      'Call this after applying an edit report, with a short summary (1-2 lines) of what you changed.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        message: {
+          type: 'string',
+          description: 'Summary shown to the user, max 2 short lines.',
+        },
+      },
+      required: ['message'],
+    },
+  },
+  {
     name: 'clear_reports',
     description:
       'Clear the queue: mark every unprocessed edit report as consumed so nothing pending ' +
@@ -146,35 +260,48 @@ async function callTool(name, args = {}) {
           .join('\n') + tail
       : 'No new reports.' + tail;
   }
+  if (name === 'notify_browser') {
+    loadEvents();
+    // ponytail: Date.now() as id — monotonic enough for one machine
+    events.push({ id: Date.now(), ts: new Date().toISOString(), message: String(args.message || '').slice(0, 300) });
+    saveEvents();
+    // The notification doubles as "work finished": complete every in-flight
+    // report so the browser's pending count drops now, not at pickup.
+    const busy = inFlight();
+    busy.forEach((r) => (r.done = true));
+    if (busy.length) saveQueue();
+    return 'Notification queued; the browser shows it within a few seconds.';
+  }
   if (name === 'clear_reports') {
-    const fresh = queue.filter((r) => !r.consumed);
-    fresh.forEach((r) => (r.consumed = true));
+    const stale = queue.filter((r) => !r.consumed || r.done === false);
+    stale.forEach((r) => {
+      r.consumed = true;
+      r.done = true;
+    });
     saveQueue();
-    return fresh.length
-      ? `Cleared ${fresh.length} pending report${fresh.length === 1 ? '' : 's'}.`
+    return stale.length
+      ? `Cleared ${stale.length} pending report${stale.length === 1 ? '' : 's'}.`
       : 'Queue was already empty.';
   }
   if (name === 'get_latest_report') {
     const r = queue[queue.length - 1];
-    if (r) {
-      r.consumed = true;
-      saveQueue();
-    }
+    if (r) consume(r);
     return asText(r);
   }
   if (name === 'wait_for_report') {
     const next = queue.find((r) => !r.consumed);
     if (next) {
-      next.consumed = true;
-      saveQueue();
+      consume(next);
       return asText(next);
     }
     const timeoutMs = Math.max(1, Number(args.timeout_seconds || 120)) * 1000;
+    setWaiting(timeoutMs);
     return await new Promise((resolve) => {
       const finish = (text) => {
         clearTimeout(timer);
         clearInterval(poll);
         waiters = waiters.filter((w) => w !== resolver);
+        setWaiting(0);
         resolve(text);
       };
       const timer = setTimeout(
@@ -188,8 +315,7 @@ async function callTool(name, args = {}) {
         loadQueue();
         const r = queue.find((q) => !q.consumed);
         if (r) {
-          r.consumed = true;
-          saveQueue();
+          consume(r);
           finish(asText(r));
         }
       }, 1000);
@@ -201,7 +327,7 @@ async function callTool(name, args = {}) {
 const send = (msg) => process.stdout.write(JSON.stringify(msg) + '\n');
 
 let buf = '';
-process.stdin.on('data', (chunk) => {
+const onStdinData = (chunk) => {
   buf += chunk;
   let i;
   while ((i = buf.indexOf('\n')) >= 0) {
@@ -216,7 +342,8 @@ process.stdin.on('data', (chunk) => {
     }
     handle(req);
   }
-});
+};
+process.stdin.on('data', onStdinData);
 
 async function handle(req) {
   const { id, method, params } = req;
@@ -246,4 +373,42 @@ async function handle(req) {
   }
 }
 
-process.stdin.on('end', () => process.exit(0));
+const onStdinEnd = () => process.exit(0);
+process.stdin.on('end', onStdinEnd);
+
+// ── Hot reload: pick up code changes without an /mcp reconnect ───────
+global.__slopOffCleanup = () => {
+  fs.unwatchFile(__filename);
+  process.stdin.off('data', onStdinData);
+  process.stdin.off('end', onStdinEnd);
+  // Old wait_for_report waiters keep their file-poll timers and resolve
+  // through the same stdout pipe, so in-flight calls survive the reload.
+  try {
+    server.close();
+  } catch (e) {}
+};
+
+fs.watchFile(__filename, { interval: 2000 }, (cur, prev) => {
+  if (cur.mtimeMs === prev.mtimeMs) return;
+  try {
+    // Syntax gate: never reload into a crash. Strip the shebang — require()
+    // tolerates it but new Function() does not.
+    new Function(fs.readFileSync(__filename, 'utf8').replace(/^#!.*/, ''));
+  } catch (e) {
+    return process.stderr.write(`slop-off: reload skipped (syntax error: ${e.message})\n`);
+  }
+  process.stderr.write('slop-off: source changed, hot-reloading\n');
+  global.__slopOffReloaded = true;
+  delete require.cache[__filename];
+  try {
+    require(__filename); // runs the new code; its top calls our cleanup
+  } catch (e) {
+    process.stderr.write(`slop-off: reload failed (${e.message})\n`);
+  }
+});
+
+// Fresh incarnation after a reload: tell the client tools may have changed.
+if (global.__slopOffReloaded) {
+  global.__slopOffReloaded = false;
+  send({ jsonrpc: '2.0', method: 'notifications/tools/list_changed' });
+}

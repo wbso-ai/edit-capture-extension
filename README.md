@@ -5,10 +5,10 @@
 
   **Edit any web page in place, then hand the diff straight to your AI assistant.**
 
-  One click makes the page editable. A second click copies a clean
+  One click makes the page editable. A second click ships a clean
   before/after report of everything you changed — prefixed with a
-  configurable prompt — to your clipboard, ready to paste into Claude,
-  ChatGPT, Cursor, or any other coding assistant.
+  configurable prompt — straight to your coding agent via the bundled
+  MCP bridge, with the full history kept in the extension.
 
   ![Manifest V3](https://img.shields.io/badge/Manifest-V3-195FA4)
   ![No dependencies](https://img.shields.io/badge/dependencies-none-16A37B)
@@ -24,9 +24,9 @@ this: describe *where* the text is, describe *what* it should become, wait,
 review, repeat. It's slow and error-prone.
 
 Slop Off flips that around: **you make the edit directly on the page**,
-and the extension produces an exact, machine-applicable changelog. Paste it
-into your assistant and it knows precisely which HTML to find and what to
-replace it with. No ambiguity, no back-and-forth.
+and the extension produces an exact, machine-applicable changelog and hands
+it to your assistant, which then knows precisely which HTML to find and
+what to replace it with. No ambiguity, no back-and-forth.
 
 ## Features
 
@@ -34,12 +34,13 @@ replace it with. No ambiguity, no back-and-forth.
   `designMode`; a gold outline shows edit mode is on
 - ⌨️ **Keyboard shortcut** — toggle edit mode with `Cmd+Shift+E`
   (`Ctrl+Shift+E` on Windows/Linux)
-- 📋 **Before/after report on your clipboard** — one section per URL, one
-  Before/After pair per changed element, wrapped in code fences
+- 📋 **Before/after report** — one section per URL, one Before/After pair
+  per changed element, wrapped in code fences, sent to your agent
 - 🎯 **CSS selector per edit** — every edit includes a selector line so your
   assistant can pinpoint the element even when the same text appears twice
-- 🤖 **Configurable AI prompt** — a prompt is prepended to the report so you
-  can paste it into an assistant as-is; edit it on the settings page
+- 🤖 **Configurable AI prompt** — a prompt is prepended to the report so
+  your assistant can apply it as-is; edit it (and the webhook URL) in the
+  ⚙ overlay's Settings tab or on the settings page
 - 🧭 **Survives navigation and reloads** — edits are synced to the background
   worker; navigate (full loads *and* SPA/pushState) or reload and keep editing
 - 📝 **Form fields too** — changes to `<input>`, `<textarea>`, and `<select>`
@@ -57,7 +58,7 @@ replace it with. No ambiguity, no back-and-forth.
   deliberately follow the link while the edit session continues
 - ↩️ **Undo per edit** — a floating chip shows the live edit count; open it
   to undo edits on this page (↩︎) or drop edits from other pages (✕) without
-  losing the rest — ending edit mode copies the report right away
+  losing the rest — ending edit mode sends the report right away
 - 👁 **Original / Diff / New views** — toggle the page between its original
   state, an in-page word diff (red strikethrough / green), and your edited
   version; Original and Diff behave like a normal read-only page, New
@@ -69,8 +70,9 @@ replace it with. No ambiguity, no back-and-forth.
   through your annotations (Shift+Tab backwards) instead of the page's own
   tab order. Annotations land in the report as Element + Instruction pairs
   for your agent
-- 🗂 **Report history** — the last 20 reports are kept on the settings page;
-  view, copy, delete, or combine several into one multi-page report
+- 🗂 **Report history** — the last 20 reports live in the History tab
+  (same panel in the ⚙ overlay and on the settings page): view, copy,
+  delete, or re-apply one to send it to the agent again
 - 🧹 **Discard a session** — the ✕ next to the edits chip (or a fast
   double-Esc) reverts the page and throws the session away, with a
   confirmation when there are changes or notes; the report is still kept in
@@ -88,11 +90,23 @@ replace it with. No ambiguity, no back-and-forth.
   cheap model), heavy when instructions need real reasoning; the choice
   rides along as a `model:` line in the report and a field in the webhook
   payload, and the `/slop-off` skill routes accordingly
-- 🔔 **On-page toast** — a confirmation appears when the report is copied
-- 💾 **Never loses a report** — if copying fails (e.g. you ended edit mode on
-  a `chrome://` page), the report is kept and copied on your next click
+- 🔔 **On-page toast** — a confirmation appears when the report is sent
+- 💾 **Never loses a report** — every report (sent, failed, or discarded)
+  stays in the history, ready to re-apply or copy manually
 - 🤝 **MCP bridge** — POST reports to the bundled `mcp/server.js` and your
   coding agent picks them up via `wait_for_report`, queued and in order
+- 🔁 **Two-way status** — a dot on the ⚙ button always shows whether the
+  agent bridge is reachable (green/red/gray); after sending, a ⏳ pill in
+  the HUD and the icon badge show how many reports still await the agent,
+  and when the agent
+  calls `notify_browser` a toast appears on the page with a 1-2 line
+  summary of what was changed; click the pill to inspect queued reports
+  or cancel one before the agent picks it up, and the ⚙ overlay has a
+  Notifications tab (also reachable by clicking a toast) to read back the
+  last 50 agent notifications
+- ♻️ **Self-updating bridge** — the MCP server hot-reloads itself when its
+  source changes (same process, same pipes), so a code update never needs
+  a manual `/mcp` reconnect
 - 🪶 **Zero dependencies** — small vanilla JS files, no build step
 
 ## Installation
@@ -115,12 +129,12 @@ This extension is not (yet) on the Chrome Web Store. Install it from source:
 2. **Edit the page.** Fix copy, rewrite headings, correct numbers, change
    form field values — anything. Navigating to other pages or reloading is
    fine; edit mode follows you.
-3. **Click the icon again.** Edit mode turns off, the report lands on your
-   clipboard, and a toast confirms it with the edit count.
-4. **Paste it into your AI assistant.** The default prompt tells it to apply
-   each edit to the source file.
+3. **Click the icon again.** Edit mode turns off, the report is sent to
+   your agent, and a toast confirms it with the edit count.
+4. **Your assistant applies it.** The default prompt tells it to apply
+   each edit to the source file, and its summary comes back as a toast.
 
-### Example clipboard output
+### Example report
 
 ```
 Apply the edits below to the source file referenced by the url.
@@ -169,7 +183,7 @@ report. **Reset to default** restores the built-in prompt.
 
 ### Straight into your coding agent (MCP)
 
-Instead of pasting from the clipboard, reports can flow directly into
+Reports flow directly into
 Claude Code (or any MCP client) via the bundled bridge in `mcp/server.js` —
 a single dependency-free Node script that receives reports from the
 extension over HTTP and serves them to the agent as MCP tools.
@@ -194,11 +208,11 @@ env var — then also adjust the webhook URL below).
 
 Nothing to do — the extension defaults its **Webhook URL** to
 `http://localhost:8931`, exactly where the bridge listens. Every report is
-POSTed there next to the clipboard, and the on-page toast confirms it:
-*"sent to agent"*. When no Claude Code session (and thus no bridge) is
-running, the POST simply fails and the report falls back to the clipboard —
-no warning, no noise. Clear the field in the options to disable POSTing, or
-change it if you overrode `SLOP_OFF_PORT`.
+POSTed there and the on-page toast confirms it: *"Sent to agent"*. When no
+Claude Code session (and thus no bridge) is running, a warning toast tells
+you so and the report stays in the history, ready to re-apply later. Clear
+the field in the settings to disable sending, or change it if you overrode
+`SLOP_OFF_PORT`.
 
 #### 3. Install the `/slop-off` skill
 
@@ -241,10 +255,11 @@ tools (`wait_for_report`, `get_latest_report`, `list_reports`) work too:
 
 | File | Role |
 |---|---|
-| `background.js` | Service worker: toggles edit mode, stores edits per tab in `chrome.storage.session`, re-injects the content script after navigation, builds the report and copies it |
+| `background.js` | Service worker: toggles edit mode, stores edits per tab in `chrome.storage.session`, re-injects the content script after navigation, builds the report and sends it to the webhook |
 | `content.js` | Injected while edit mode is active: enables `designMode`, snapshots each element's `outerHTML` right before its first change (`beforeinput`), handles annotations/views/panel UI, and syncs edits + notes to the background (debounced) |
-| `options.html` / `options.js` | Settings page: prompt, webhook URL, report history — stored in `chrome.storage.sync` / `.local` |
-| `mcp/server.js` | Optional MCP bridge: HTTP endpoint for the webhook + `wait_for_report` / `get_latest_report` / `list_reports` / `clear_reports` tools over stdio |
+| `panes.js` | Shared UI panes (Shortcuts / Notifications / History / Settings): one implementation for the in-page ⚙ overlay and the options page |
+| `options.html` / `options.js` | Settings page: thin shell around `panes.js` — stored in `chrome.storage.sync` / `.local` |
+| `mcp/server.js` | Optional MCP bridge: HTTP endpoint for the webhook (+ `GET /status` for pending reports and agent notifications, `POST /cancel` to drop one) + `wait_for_report` / `get_latest_report` / `list_reports` / `clear_reports` / `notify_browser` tools over stdio; hot-reloads itself on code changes |
 | `.claude/skills/slop-off/` | Claude Code skill: `/slop-off` processes queued reports in a loop |
 
 Details worth knowing:
@@ -263,24 +278,21 @@ Details worth knowing:
 |---|---|
 | `scripting` + `<all_urls>` | Inject the content script, and re-inject it after navigation (this is what lets edit mode survive page changes) |
 | `storage` | Persist your prompt (`sync`) and in-flight edits (`session`) |
-| `clipboardWrite` | Copy the report to the clipboard |
 | `activeTab` | Baseline access to the tab you clicked on |
 
 The extension has no remote code and no analytics. The only network request
 it makes is the report POST to your own webhook URL — by default
 `http://localhost:8931`, i.e. the MCP bridge on your own machine. Clear the
-field in the options and your edits never leave the clipboard.
+field in the settings and your edits never leave the extension.
 
 ## Limitations
 
 - Doesn't work on `chrome://` pages or the Chrome Web Store (the badge shows
-  ✗). If you end edit mode on such a page, the report is saved — the badge
-  shows 💾 — and your next click on the icon (from any normal page) copies it.
+  ✗). If you end edit mode on such a page, the report is still sent and
+  kept in the history — only the toast can't be shown there.
 - Heavily dynamic pages (e.g. React apps that re-render) may overwrite your
   edits or produce noisy diffs, since the framework owns the DOM. SPA
   navigations themselves are handled correctly.
-- If the async Clipboard API fails (e.g. the document isn't focused), the
-  extension falls back to a hidden textarea with `execCommand('copy')`.
 
 ## Development
 

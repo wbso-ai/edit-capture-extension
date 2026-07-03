@@ -1,10 +1,10 @@
 {
   "manifest_version": 3,
   "name": "Slop Off",
-  "version": "1.11.0",
-  "description": "Click to make any page editable; click again to copy a before/after report of your edits (with a configurable prompt) to the clipboard. Survives navigation and reloads.",
+  "version": "1.12.0",
+  "description": "Click to make any page editable; click again to send a before/after report of your edits (with a configurable prompt) straight to your coding agent. Survives navigation and reloads.",
   "author": "jankees@wbso.ai",
-  "permissions": ["activeTab", "scripting", "clipboardWrite", "storage"],
+  "permissions": ["activeTab", "scripting", "storage"],
   "host_permissions": ["<all_urls>"],
   "options_ui": {
     "page": "options.html",

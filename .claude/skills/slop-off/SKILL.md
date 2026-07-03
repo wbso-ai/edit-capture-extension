@@ -30,8 +30,10 @@ Process reports from the `slop-off` MCP server and apply them to the source.
      first report in a single line "📥 N change(s) received" (N = the number
      of edits from the report header), then process it (see "Model" below)
      and immediately spawn a new watcher afterwards. NO_REPORT → just spawn
-     a new watcher, without comment. After ~3 empty watchers in a row:
-     ask the user once whether you should keep waiting.
+     a new watcher, without comment — empty watchers are normal, the loop
+     runs until the user says stop. After ~6 empty watchers in a row,
+     mention in one line that you're still waiting (don't ask, don't stop);
+     repeat that at most once an hour.
   4. If the user says "stop" (or "done"), don't spawn a new watcher
      anymore.
 - Argument `once`: process exactly one report (may be synchronous with
@@ -56,6 +58,10 @@ working path, and the full "Apply edits" instructions below. Have it report
 which files were changed and which edits were not applicable. Then report to
 the user in a single line: "✅ N change(s) applied — file1, file2". Only if
 something failed a second line: "⚠️ not applicable: …". No further explanation.
+Then ALWAYS call the slop-off MCP tool `notify_browser` with that same
+summary (max 2 short lines) — success or failure. The extension shows it as
+a toast on the page, and the call also marks the report as done in the
+browser HUD: skip it and the report stays stuck on "applying" for the user.
 Run the worker synchronously (`run_in_background: false`) so reports are
 processed in order and workers don't touch each other's files — the long wait
 already happens in the background watcher, so this only blocks during the
@@ -88,4 +94,7 @@ Element/Instruction pairs, each with a CSS selector as a hint.
 - Run a quick check if the project has one (typecheck/lint; no
   full build per report in loop mode).
 - Summarize in 1-3 lines: which files, which edits, what failed.
+- Always call `notify_browser` with a 1-2 line summary of what changed
+  (e.g. "Hero heading and CTA text updated in index.html") — also on
+  failure; it completes the report in the browser HUD.
 - Go straight back to waiting.

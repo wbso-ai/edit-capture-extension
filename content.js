@@ -158,7 +158,8 @@
   // ── Instant mode: ship pending changes after a short pause ──────────
   const scheduleInstantFlush = () => {
     clearTimeout(instantTimer);
-    instantTimer = setTimeout(flushInstant, 2500);
+    // ponytail: 1.2s pause = "done typing"; raise if half-typed words ship
+    instantTimer = setTimeout(flushInstant, 1200);
   };
 
   const flushNow = (manual) => {
@@ -190,6 +191,7 @@
           syncMarkers();
           renderPanel();
           miniToast('⚡ Sent to agent');
+          pollPending(); // pill shows the new pending report right away
         }
       );
     } catch (e) {}
@@ -418,6 +420,8 @@
     showBorder();
     renderPanel();
     adoptSection();
+    bridgeTimer = setInterval(pollPending, 1000); // localhost: cheap, keeps the pill snappy
+    pollPending();
     try {
       chrome.storage.sync.get({ instant: false, model: 'light' }, (v) => {
         instantMode = Boolean(v && v.instant);
@@ -1063,7 +1067,125 @@
   let submitBtn = null;
   let tipEl = null;
   let helpEl = null;
+  let pendingEl = null;
   let panelOpen = false;
+
+  // ── Pending pill: reports queued at the bridge, not yet picked up ───
+  // Click the pill for the list; a row expands to the report text, ✕ cancels.
+  let bridgeTimer = 0;
+  let pendingListEl = null;
+  let pendingOpen = false;
+  let pendingReports = [];
+  const pendingShown = new Set(); // ids with the report text expanded
+
+  // Bridge state, always visible as a dot on the ⚙ button. "Bridge up" is
+  // deliberately distinct from "an agent is actually waiting for edits".
+  let bridgeState = 'checking'; // 'checking' | 'waiting' | 'idle' | 'off' | 'none'
+  let bridgeDotEl = null;
+  const BRIDGE_LABELS = {
+    checking: 'checking agent connection…',
+    waiting: 'agent is waiting for your edits',
+    processing: 'agent is applying your edits…',
+    idle: 'bridge up — no agent waiting right now',
+    off: 'agent bridge not reachable',
+    none: 'no webhook configured',
+  };
+  const BRIDGE_COLORS = {
+    checking: '#FBB734',
+    waiting: '#22C55E',
+    processing: '#14B8A6',
+    idle: '#195FA4',
+    off: '#EF4444',
+    none: '#CBD5E1',
+  };
+  const bridgeStateOf = (resp) =>
+    !resp
+      ? 'off'
+      : !resp.configured
+        ? 'none'
+        : !resp.ok
+          ? 'off'
+          : resp.processing
+            ? 'processing'
+            : resp.waiting
+              ? 'waiting'
+              : 'idle';
+  const paintBridgeDot = () => {
+    if (!bridgeDotEl) return;
+    bridgeDotEl.style.background = BRIDGE_COLORS[bridgeState];
+  };
+
+  const pollPending = () => {
+    try {
+      chrome.runtime.sendMessage({ type: 'checkBridge' }, (resp) => {
+        void chrome.runtime.lastError;
+        bridgeState = bridgeStateOf(resp);
+        paintBridgeDot();
+        if (!pendingEl) return;
+        const n = resp?.pending || 0;
+        pendingReports = resp?.reports || [];
+        pendingEl.style.display = n ? 'inline-flex' : 'none';
+        pendingEl.textContent = `⏳ ${n}`;
+        if (!n) pendingOpen = false;
+        renderPendingList();
+      });
+    } catch (e) {
+      bridgeState = 'off';
+      paintBridgeDot();
+    }
+  };
+
+  const renderPendingList = () => {
+    if (!pendingListEl) return;
+    pendingListEl.style.display = pendingOpen && pendingReports.length ? 'block' : 'none';
+    pendingListEl.textContent = '';
+    if (!pendingOpen) return;
+    for (const r of pendingReports) {
+      const row = document.createElement('div');
+      row.style.cssText =
+        'display:flex;gap:8px;align-items:center;padding:8px 10px;border-bottom:1px solid #EEF2F7;font-size:12px;';
+      const label = document.createElement('div');
+      label.style.cssText =
+        'flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#001E35;cursor:pointer;';
+      const time = new Date(r.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      const applying = r.phase === 'applying';
+      label.textContent =
+        `${time} · ${r.count ?? '?'} edit${r.count === 1 ? '' : 's'} · ` +
+        (r.urls || []).map((u) => u.replace(/^https?:\/\//, '')).join(', ') +
+        (applying ? ' · ⚙ applying…' : '');
+      if (applying) label.style.color = '#0F766E';
+      label.title = 'Show the report';
+      label.addEventListener('click', () => {
+        pendingShown.has(r.id) ? pendingShown.delete(r.id) : pendingShown.add(r.id);
+        renderPendingList();
+      });
+      const x = document.createElement('button');
+      x.textContent = '✕';
+      x.title = applying
+        ? 'Dismiss — the agent already picked this up'
+        : 'Cancel: the agent will not pick this report up';
+      x.style.cssText =
+        'border:1px solid #CBD5E1;color:#B91C1C;background:#fff;border-radius:6px;cursor:pointer;padding:2px 8px;font:inherit;flex:none;';
+      x.addEventListener('click', () => {
+        chrome.runtime.sendMessage({ type: 'cancelReport', id: r.id }, (ok) => {
+          void chrome.runtime.lastError;
+          miniToast(ok ? 'Report cancelled' : '⚠ Could not cancel — already picked up?');
+          pollPending();
+        });
+      });
+      row.append(label, x);
+      pendingListEl.appendChild(row);
+      if (pendingShown.has(r.id)) {
+        const pre = document.createElement('pre');
+        pre.textContent = r.report || '(no report text)';
+        pre.style.cssText =
+          'margin:0;padding:8px 10px;background:#F8FAFC;border-bottom:1px solid #EEF2F7;' +
+          'max-height:150px;overflow:auto;font:11px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;' +
+          'color:#475569;white-space:pre-wrap;word-break:break-word;';
+        pendingListEl.appendChild(pre);
+      }
+    }
+  };
 
   // Custom tooltip: native `title` popups appear at the cursor and cover the
   // very buttons they describe (and can fall off-screen down here in the
@@ -1093,44 +1215,19 @@
     if (tipEl) tipEl.style.opacity = '0';
   };
   const attachTip = (el, text) => {
-    el.addEventListener('mouseenter', () => showTip(el, text));
+    // `text` may be a function for tips that show live state.
+    el.addEventListener('mouseenter', () => showTip(el, typeof text === 'function' ? text() : text));
     el.addEventListener('mouseleave', hideTip);
   };
 
-  // ── Shortcut cheat-sheet overlay (the ? button) ─────────────────────
-  const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform || '');
-  const CMD = IS_MAC ? '⌘' : 'Ctrl';
-  const CTRL = IS_MAC ? '⌃' : 'Ctrl';
+  // ── ⚙ overlay: panes come from panes.js (shared with the options page) ─
   const REPO_URL = 'https://github.com/wbso-ai/slop-off';
-  // Mouse gestures render as soft blue pills; real keys as keycaps.
-  const MOUSE = new Set(['Click', 'Hover', 'Drag']);
-  const HELP_SECTIONS = [
-    ['Editing', [
-      [['Click'], 'any text or element — then just type'],
-      [[CMD, 'Click'], 'activate a button instead of editing it'],
-      [['Alt', 'Click'], 'edit a collapsed disclosure label'],
-    ]],
-    ['Notes', [
-      [[CTRL, 'Click'], 'attach a note (hold ' + CTRL + ' to aim)'],
-      [['Tab'], 'next annotated element · ⇧ for previous'],
-      [['Enter'], 'save the note · ⇧ Enter for a new line'],
-    ]],
-    ['Links & fields', [
-      [['Hover'], 'reveal the URL / placeholder editor'],
-      [[CMD, 'Click'], 'follow a link — the session continues'],
-    ]],
-    ['Session', [
-      [[CMD, 'Enter'], 'send pending changes now'],
-      [['Esc', 'Esc'], 'discard everything & end the session'],
-      [['Esc'], 'close an open editor'],
-    ]],
-  ];
-
   const SVG_GITHUB =
     '<svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">' +
     '<path d="M12 1.5A10.5 10.5 0 0 0 8.68 22c.53.1.72-.23.72-.5v-1.9c-2.93.64-3.55-1.25-3.55-1.25-.48-1.22-1.17-1.55-1.17-1.55-.96-.65.07-.64.07-.64 1.06.08 1.62 1.09 1.62 1.09.94 1.62 2.47 1.15 3.07.88.1-.68.37-1.15.67-1.42-2.34-.27-4.8-1.17-4.8-5.2 0-1.15.41-2.09 1.09-2.83-.11-.27-.47-1.34.1-2.8 0 0 .88-.28 2.9 1.08a10 10 0 0 1 5.28 0c2-1.36 2.9-1.08 2.9-1.08.57 1.46.21 2.53.1 2.8.68.74 1.09 1.68 1.09 2.83 0 4.04-2.47 4.93-4.82 5.19.38.33.72.97.72 1.96v2.9c0 .28.19.61.73.5A10.5 10.5 0 0 0 12 1.5Z"/></svg>';
 
   let helpPingTimer = 0;
+  let helpTab = 'keys'; // remembered across open/close: 'keys' | 'notes'
   const closeHelp = () => {
     clearInterval(helpPingTimer);
     helpPingTimer = 0;
@@ -1149,7 +1246,12 @@
       txt.style.color = color;
       txt.textContent = label;
     };
-    if (state === 'ok') set('#22C55E', '0 0 0 3px rgba(34,197,94,.22)', '#15803D', 'Connected to the agent');
+    if (state === 'waiting')
+      set('#22C55E', '0 0 0 3px rgba(34,197,94,.22)', '#15803D', 'Agent is waiting for your edits');
+    else if (state === 'processing')
+      set('#14B8A6', '0 0 0 3px rgba(20,184,166,.22)', '#0F766E', 'Agent is applying your edits…');
+    else if (state === 'idle')
+      set('#195FA4', '0 0 0 3px rgba(25,95,164,.22)', '#195FA4', 'Bridge up — no agent waiting (run /slop-off)');
     else if (state === 'checking') set('#FBB734', '0 0 0 3px rgba(251,183,52,.22)', '#B45309', 'Checking connection…');
     else if (state === 'none') set('#CBD5E1', 'none', '#94A3B8', 'No webhook configured');
     else set('#EF4444', 'none', '#B91C1C', 'Agent bridge not reachable');
@@ -1160,43 +1262,21 @@
       chrome.runtime.sendMessage({ type: 'checkBridge' }, (resp) => {
         void chrome.runtime.lastError;
         if (!helpEl) return;
-        paintLamp(!resp ? 'off' : !resp.configured ? 'none' : resp.ok ? 'ok' : 'off');
+        paintLamp(bridgeStateOf(resp));
       });
     } catch (e) {
       paintLamp('off');
     }
   };
 
-  const toggleHelp = () => {
-    if (helpEl) return closeHelp();
-    const keycap = (k) =>
-      MOUSE.has(k)
-        ? `<span style="display:inline-flex;align-items:center;height:23px;padding:0 9px;border-radius:7px;` +
-          `background:#EAF2FB;border:1px solid #CDE0F3;color:#195FA4;` +
-          `font:600 11px/1 -apple-system,'Segoe UI',sans-serif;">${k.toLowerCase()}</span>`
-        : `<kbd style="display:inline-flex;align-items:center;justify-content:center;min-width:23px;height:23px;` +
-          `padding:0 6px;border-radius:7px;background:linear-gradient(180deg,#fff,#EEF2F7);` +
-          `border:1px solid #CBD5E1;border-bottom-color:#AEBACB;box-shadow:0 1px 0 rgba(0,30,53,.05);` +
-          `font:600 12px/1 ui-monospace,SFMono-Regular,Menlo,monospace;color:#001E35;">${k}</kbd>`;
-    const rowsFor = (rows) =>
-      rows
-        .map(
-          ([keys, desc], i) =>
-            `<div style="display:grid;grid-template-columns:1fr auto;align-items:center;gap:14px;` +
-            `padding:9px 0;${i ? 'border-top:1px solid #EDF1F6;' : ''}">` +
-            `<div style="color:#475569;font-size:12.5px;line-height:1.35;">${desc}</div>` +
-            `<div style="display:flex;gap:5px;align-items:center;justify-self:end;">` +
-            keys.map(keycap).join('') +
-            `</div></div>`
-        )
-        .join('');
-    const cols = HELP_SECTIONS.map(
-      ([title, rows]) =>
-        `<section style="background:#F8FAFC;border:1px solid #EDF1F6;border-radius:13px;padding:12px 16px 6px;">` +
-        `<div style="font:700 11px/1 -apple-system,'Segoe UI',sans-serif;letter-spacing:.09em;` +
-        `text-transform:uppercase;color:#195FA4;margin-bottom:2px;">${title}</div>` +
-        `${rowsFor(rows)}</section>`
-    ).join('');
+  let helpTabsApi = null;
+  const toggleHelp = (tab) => {
+    if (helpEl) {
+      closeHelp();
+      helpTabsApi = null;
+      if (!tab) return; // plain toggle: second click closes
+    }
+    if (tab) helpTab = tab;
 
     helpEl = document.createElement('div');
     helpEl.setAttribute('data-ec-ui', '');
@@ -1206,18 +1286,19 @@
       'background:rgba(0,30,53,.5);backdrop-filter:blur(3px);-webkit-backdrop-filter:blur(3px);' +
       'font:13px/1.4 -apple-system,"Segoe UI",sans-serif;';
     helpEl.innerHTML =
+      // Fixed-size sheet: switching tabs never resizes the panel.
       `<div style="background:#fff;border-radius:18px;box-shadow:0 30px 80px rgba(0,30,53,.45);` +
-      `width:min(600px,calc(100vw - 40px));max-height:calc(100vh - 40px);overflow:auto;padding:22px 24px 20px;">` +
-      // header
-      `<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:16px;">` +
-      `<div><div style="font:800 17px/1.1 -apple-system,'Segoe UI',sans-serif;color:#001E35;">Shortcuts</div>` +
-      `<div style="color:#94A3B8;font-size:12px;margin-top:3px;">Edit any page, then ship the diff to your agent.</div></div>` +
+      `width:min(640px,calc(100vw - 40px));height:min(580px,calc(100vh - 40px));display:flex;` +
+      `flex-direction:column;overflow:hidden;padding:22px 24px 20px;box-sizing:border-box;">` +
+      // header: tab switcher (filled by panes.js) + close
+      `<div style="display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:16px;flex:none;">` +
+      `<div data-ec-tabs></div>` +
       `<button data-ec-close="1" aria-label="Close" style="flex:none;border:none;background:#F1F5F9;color:#64748B;` +
       `width:30px;height:30px;border-radius:999px;cursor:pointer;font-size:15px;line-height:1;">✕</button></div>` +
-      // grid of sections
-      `<div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;">${cols}</div>` +
+      // panes, one visible at a time, inside a scroll area
+      `<div data-ec-panes style="flex:1;min-height:0;overflow:auto;"></div>` +
       // footer: status lamp + github + esc hint
-      `<div style="margin-top:18px;padding-top:14px;border-top:1px solid #EEF2F7;display:flex;` +
+      `<div style="margin-top:18px;padding-top:14px;border-top:1px solid #EEF2F7;display:flex;flex:none;` +
       `align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">` +
       `<div style="display:flex;align-items:center;gap:8px;">` +
       `<span data-ec-lamp style="width:9px;height:9px;border-radius:50%;background:#FBB734;flex:none;` +
@@ -1250,9 +1331,43 @@
     );
     (document.body || document.documentElement).appendChild(helpEl);
     helpEl.querySelector('[data-ec-close]')?.focus();
+
+    // Shared panes (panes.js): same tabs as the options page.
+    const P = window.SlopOffPanes;
+    const resend = (item, cb) => {
+      try {
+        chrome.runtime.sendMessage(
+          { type: 'resendReport', report: item.report, count: item.count, urls: item.urls || [] },
+          (ok) => {
+            void chrome.runtime.lastError;
+            pollPending();
+            cb(Boolean(ok));
+          }
+        );
+      } catch (e) {
+        cb(false);
+      }
+    };
+    helpTabsApi = P.mountTabs(
+      helpEl.querySelector('[data-ec-tabs]'),
+      helpEl.querySelector('[data-ec-panes]'),
+      [
+        { key: 'keys', label: 'Shortcuts', fill: P.renderShortcuts },
+        { key: 'notes', label: 'Notifications', fill: (el) => P.renderNotifications(el, { toast: miniToast }) },
+        { key: 'history', label: 'History', fill: (el) => P.renderHistory(el, { toast: miniToast, resend }) },
+        { key: 'settings', label: 'Settings', fill: (el) => P.renderSettings(el, { toast: miniToast }) },
+      ],
+      helpTab,
+      (key) => (helpTab = key)
+    );
+
     paintLamp('checking');
     pingBridge();
-    helpPingTimer = setInterval(pingBridge, 4000);
+    helpPingTimer = setInterval(() => {
+      pingBridge();
+      // Live refresh while open (settings has a build-once guard, so no clobber).
+      if (helpTabsApi && helpTabsApi.getTab() !== 'settings') helpTabsApi.refresh();
+    }, 4000);
   };
 
   // Current after-state of a tracked element, view-safe: while a view is
@@ -1303,9 +1418,9 @@
       renderPanel();
     });
     viewBarEl = document.createElement('div');
-    // Centered above the chip row within the panel column.
+    // Right-aligned above the chip row, like the rest of the panel column.
     viewBarEl.style.cssText =
-      'display:none;align-self:center;background:#fff;border:1px solid #CBD5E1;border-radius:999px;' +
+      'display:none;background:#fff;border:1px solid #CBD5E1;border-radius:999px;' +
       'overflow:hidden;box-shadow:0 4px 16px rgba(0,30,53,.2);';
     for (const [mode, label] of [
       ['original', 'original'],
@@ -1390,22 +1505,45 @@
       'box-shadow:0 4px 16px rgba(0,30,53,.3);';
     submitBtn.addEventListener('click', () => flushNow(true));
     attachTip(submitBtn, 'Send pending changes to the agent now (⌘⏎ — session keeps going)');
-    // Help: opens the shortcut cheat-sheet overlay.
+    // Gear: opens the shortcuts / notifications overlay. The dot in its
+    // corner always shows the agent-bridge state (green/red/gray).
     const helpBtn = document.createElement('button');
     helpBtn.type = 'button';
-    helpBtn.textContent = '?';
+    helpBtn.innerHTML = SVG_GEAR;
     helpBtn.style.cssText =
-      'width:30px;height:30px;border-radius:999px;cursor:pointer;flex:none;background:#fff;' +
-      'border:1px solid #CBD5E1;color:#001E35;font:700 15px/1 -apple-system,"Segoe UI",sans-serif;' +
+      'position:relative;width:30px;height:30px;border-radius:999px;cursor:pointer;flex:none;background:#fff;' +
+      'border:1px solid #CBD5E1;color:#001E35;display:flex;align-items:center;justify-content:center;' +
       'box-shadow:0 4px 16px rgba(0,30,53,.2);';
-    helpBtn.addEventListener('click', toggleHelp);
-    attachTip(helpBtn, 'Keyboard & mouse shortcuts');
+    bridgeDotEl = document.createElement('span');
+    bridgeDotEl.style.cssText =
+      'position:absolute;top:-2px;right:-2px;width:10px;height:10px;border-radius:50%;' +
+      'border:2px solid #fff;background:#FBB734;pointer-events:none;';
+    helpBtn.appendChild(bridgeDotEl);
+    paintBridgeDot();
+    helpBtn.addEventListener('click', () => toggleHelp());
+    attachTip(helpBtn, () => `Shortcuts & settings — ${BRIDGE_LABELS[bridgeState]}`);
+    // Pending pill: how many sent reports still await the agent.
+    pendingEl = document.createElement('button');
+    pendingEl.type = 'button';
+    pendingEl.style.cssText =
+      'display:none;align-items:center;height:28px;padding:0 10px;border-radius:999px;flex:none;' +
+      'background:#fff;border:1px solid #CBD5E1;color:#B45309;cursor:pointer;' +
+      'font:600 12px/1 -apple-system,"Segoe UI",sans-serif;box-shadow:0 4px 16px rgba(0,30,53,.2);';
+    attachTip(pendingEl, 'Reports waiting to be picked up by the agent — click to view or cancel');
+    pendingEl.addEventListener('click', () => {
+      pendingOpen = !pendingOpen;
+      renderPendingList();
+    });
+    pendingListEl = document.createElement('div');
+    pendingListEl.style.cssText =
+      'display:none;background:#fff;border:1px solid #CBD5E1;border-radius:10px;' +
+      'box-shadow:0 8px 30px rgba(0,30,53,.25);max-height:35vh;overflow:auto;width:340px;';
     const chipRow = document.createElement('div');
     chipRow.style.cssText = 'display:flex;gap:8px;align-items:center;';
-    chipRow.append(helpBtn, modeBtn, modelBtn, chipEl, submitBtn, discardBtn);
+    chipRow.append(helpBtn, modeBtn, modelBtn, pendingEl, chipEl, submitBtn, discardBtn);
     paintModeBtn();
     paintModelBtn();
-    panelEl.append(listEl, viewBarEl, chipRow);
+    panelEl.append(pendingListEl, listEl, viewBarEl, chipRow);
     (document.body || document.documentElement).appendChild(panelEl);
   };
 
@@ -1755,6 +1893,12 @@
     paintSeg(modeBtn.children[1], instantMode); // instant
   };
 
+  const SVG_GEAR =
+    '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
+    'stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+    '<circle cx="12" cy="12" r="3"/>' +
+    '<path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>';
+
   const SVG_FEATHER =
     '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
     'stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
@@ -1780,8 +1924,9 @@
     panelEl?.remove();
     tipEl?.remove();
     helpEl?.remove();
-    panelEl = chipEl = listEl = viewBarEl = modeBtn = modelBtn = submitBtn = tipEl = helpEl = null;
+    panelEl = chipEl = listEl = viewBarEl = modeBtn = modelBtn = submitBtn = tipEl = helpEl = pendingEl = pendingListEl = bridgeDotEl = null;
     panelOpen = false;
+    pendingOpen = false;
   };
 
   // ponytail: fixed overlay border instead of html outline, so it stays above page's fixed/high-z-index elements
@@ -1804,6 +1949,7 @@
     clearTimeout(syncTimer);
     clearTimeout(instantTimer);
     clearInterval(urlWatch);
+    clearInterval(bridgeTimer);
     document.removeEventListener('beforeinput', onBeforeInput, true);
     document.removeEventListener('input', onInput, true);
     document.removeEventListener('focusin', onFocusIn, true);
@@ -1837,6 +1983,14 @@
   };
 
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+    if (msg.type === 'showNotifications') {
+      // Clicked agent toast: open the overlay on the notifications tab.
+      if (!active) return sendResponse(false); // background falls back to settings
+      closeHelp();
+      toggleHelp('notes');
+      sendResponse(true);
+      return;
+    }
     if (msg.type === 'finalize') {
       // Don't checkUrlChange() here: its fire-and-forget sync could race the
       // background's section read. `tracked` always belongs to `currentUrl`,
