@@ -3,12 +3,14 @@
 
   # Slop Off
 
-  **Edit any web page in place, then hand the diff straight to your AI assistant.**
+  **Frictionless taste. Turn the slop off.**
 
-  One click makes the page editable. A second click ships a clean
-  before/after report of everything you changed — prefixed with a
-  configurable prompt — straight to your coding agent via the bundled
-  MCP bridge, with the full history kept in the extension.
+  AI builds your pages fast, but generated is rarely *finished* — the
+  last 10% is taste, and taste shouldn't cost friction. Slop Off lets you
+  edit the live page like a document: rewrite the copy, fix the wording,
+  nudge what bugs you. Every change ships straight to your coding agent
+  as an exact, element-targeted before/after diff. One skill call, and
+  your taste lands in the source.
 
   ![Manifest V3](https://img.shields.io/badge/Manifest-V3-195FA4)
   ![No dependencies](https://img.shields.io/badge/dependencies-none-16A37B)
@@ -19,14 +21,24 @@
 
 ## Why?
 
-Tweaking copy on a website through an AI coding assistant usually goes like
-this: describe *where* the text is, describe *what* it should become, wait,
-review, repeat. It's slow and error-prone.
+Your agent generates a page in seconds — and then the real work starts.
+The copy is bland, a heading misses the point, a button label feels off.
+That last 10% is taste, and taste dies in prompt round-trips: describe
+*where* the text is, describe *what* it should become, wait, review,
+discover it changed the wrong heading, repeat.
 
-Slop Off flips that around: **you make the edit directly on the page**,
-and the extension produces an exact, machine-applicable changelog and hands
-it to your assistant, which then knows precisely which HTML to find and
-what to replace it with. No ambiguity, no back-and-forth.
+Slop Off makes adding taste frictionless. **You make the edit directly on
+the page**, as specific as taste demands — down to the exact element — and
+the extension turns it into a machine-applicable changelog for your agent
+or coding harness. Call the `/slop-off` skill once; the agent does the
+rest while you keep browsing.
+
+And you never leave the page. Slop doesn't show in a diff view — it
+shows in the rendered result, the thing your users actually see. The
+code isn't sloppy; the page just isn't *finished*. So judge the page,
+not the source: spot what's off, fix it on the spot, stay in the flow.
+Your agent deals with the code — you never have to look at it. No
+ambiguity, no back-and-forth, no slop.
 
 ## Features
 
