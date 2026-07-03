@@ -27,8 +27,9 @@ Process reports from the `slop-off` MCP server and apply them to the source.
      'stop' when you're done" and continue with whatever the user is doing
      (or hand the turn back).
   3. Once the watcher finishes you're notified. Report received →
-     first report in a single line "📥 N change(s) received" (N = the number
-     of edits from the report header), then process it (see "Model" below)
+     first report in a single line "📥 N change(s) received · M report(s)
+     still queued" (N = edit count, M = the "more reports queued" number —
+     both are in the report header), then process it (see "Model" below)
      and immediately spawn a new watcher afterwards. NO_REPORT → just spawn
      a new watcher, without comment — empty watchers are normal, the loop
      runs until the user says stop. After ~6 empty watchers in a row,
@@ -56,8 +57,11 @@ per report via the Agent tool with the model the report asks for (the
 Give the worker subagent in its prompt: the full report, the project's
 working path, and the full "Apply edits" instructions below. Have it report
 which files were changed and which edits were not applicable. Then report to
-the user in a single line: "✅ N change(s) applied — file1, file2". Only if
-something failed a second line: "⚠️ not applicable: …". No further explanation.
+the user in a single line: "✅ N change(s) applied — file1, file2 · M still
+queued" (M from the report header; omit the suffix when it's 0 — then say
+"· queue empty, waiting"). Only if something failed a second line:
+"⚠️ not applicable: …". No further explanation. The user must always be able
+to tell from the main thread how much work is still pending.
 Then ALWAYS call the slop-off MCP tool `notify_browser` with that same
 summary (max 2 short lines) — success or failure. The extension shows it as
 a toast on the page, and the call also marks the report as done in the

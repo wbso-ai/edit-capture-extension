@@ -445,15 +445,20 @@
   let toastEl = null;
   let toastTimer = 0;
   const miniToast = (text) => {
+    try {
+      window.SlopOffPanes?.logNotif(text); // every toast lands in the history
+    } catch (e) {}
     clearTimeout(toastTimer);
-    toastEl?.remove();
+    toastEl?.remove(); // rapid hints replace each other; other toasts stack
     const t = document.createElement('div');
     t.setAttribute('data-ec-ui', '');
+    t.setAttribute('data-slop-toast', '');
     t.textContent = text;
-    // Right above the whole panel (chip + view bar + open list), never on top of it.
-    let bottom = 20;
-    if (panelEl?.isConnected) {
-      bottom = Math.round(innerHeight - panelEl.getBoundingClientRect().top + 8);
+    // Stack upward from the bottom; the lowest 70px belong to the host page.
+    // ponytail: no re-collapse when a lower toast expires — they live seconds
+    let bottom = 78;
+    for (const el of document.querySelectorAll('[data-slop-toast],[data-slop-stack]')) {
+      bottom = Math.max(bottom, Math.round(innerHeight - el.getBoundingClientRect().top + 8));
     }
     t.style.cssText = TOAST_CSS + `bottom:${bottom}px;`;
     (document.body || document.documentElement).appendChild(t);
@@ -1401,6 +1406,7 @@
     if (panelEl) return;
     panelEl = document.createElement('div');
     panelEl.setAttribute('data-ec-ui', '');
+    panelEl.setAttribute('data-slop-stack', ''); // toasts stack above the panel
     panelEl.contentEditable = 'false'; // keep our own UI out of designMode
     panelEl.style.cssText =
       'position:fixed;right:20px;bottom:20px;z-index:2147483647;display:flex;flex-direction:column;' +

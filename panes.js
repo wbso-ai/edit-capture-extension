@@ -12,14 +12,32 @@
     'Keep everything else unchanged and preserve the original formatting and indentation.',
   ].join('\n');
 
+  // Every toast also lands in the notification history, agent and internal
+  // actions alike, so nothing that flashed by is lost.
+  const logNotif = (message, kind = 'internal') => {
+    // ponytail: don't resurrect the list you just cleared
+    if (/^(Notifications cleared|Data cleared)/.test(message)) return;
+    try {
+      chrome.storage.local.get({ notifications: [] }, ({ notifications }) => {
+        notifications.unshift({ ts: new Date().toISOString(), message, kind });
+        chrome.storage.local.set({ notifications: notifications.slice(0, 50) });
+      });
+    } catch (e) {}
+  };
+
   // Fallback toast for surfaces without their own (the options page).
   const toast = (text) => {
-    document.getElementById('slop-off-pane-toast')?.remove();
+    logNotif(text);
     const t = document.createElement('div');
-    t.id = 'slop-off-pane-toast';
+    t.setAttribute('data-slop-toast', '');
     t.textContent = text;
+    // Stack upward from the bottom; the lowest 70px belong to the host page.
+    let bottom = 78;
+    for (const el of document.querySelectorAll('[data-slop-toast],[data-slop-stack]')) {
+      bottom = Math.max(bottom, Math.round(innerHeight - el.getBoundingClientRect().top + 8));
+    }
     t.style.cssText =
-      'position:fixed;right:20px;bottom:20px;z-index:2147483647;background:#001E35;color:#fff;' +
+      `position:fixed;right:20px;bottom:${bottom}px;z-index:2147483647;background:#001E35;color:#fff;` +
       'border-left:4px solid #FBB734;border-radius:10px;padding:10px 16px;' +
       'font:600 13px/1.4 -apple-system,"Segoe UI",sans-serif;box-shadow:0 6px 24px rgba(0,30,53,.35);';
     document.body.appendChild(t);
@@ -123,7 +141,7 @@
     const render = (notifications) => {
       if (!pane.isConnected) return;
       if (!notifications.length) {
-        return paneEmpty(pane, 'No notifications yet — the agent posts a 1-2 line summary here after applying your edits.');
+        return paneEmpty(pane, 'No notifications yet — every toast (agent summaries and actions like sent/saved/cancelled) is kept here.');
       }
       pane.textContent = '';
       const clear = rowBtn('Clear all', 'Forget every notification', '#94A3B8');
@@ -143,8 +161,11 @@
         t.style.cssText = 'color:#94A3B8;font-size:11px;flex:none;';
         t.textContent = new Date(n.ts).toLocaleString();
         const m = document.createElement('span');
-        m.style.cssText = 'font-size:12.5px;color:#001E35;white-space:pre-line;min-width:0;';
-        m.textContent = n.message;
+        // Agent summaries dark, internal actions (sent/saved/cancelled) dimmed.
+        const internal = n.kind && n.kind !== 'agent';
+        m.style.cssText =
+          `font-size:12.5px;color:${internal ? '#64748B' : '#001E35'};white-space:pre-line;min-width:0;`;
+        m.textContent = internal ? n.message : `🤖 ${n.message}`;
         row.append(t, m);
         pane.appendChild(row);
       }
@@ -244,24 +265,46 @@
     saveBtn.style.cssText =
       'background:#195FA4;color:#fff;border:none;border-radius:8px;padding:8px 18px;cursor:pointer;' +
       'font:700 12px/1 -apple-system,"Segoe UI",sans-serif;';
-    const resetBtn = document.createElement('button');
-    resetBtn.type = 'button';
-    resetBtn.textContent = 'Reset prompt';
-    resetBtn.style.cssText =
-      'background:#fff;color:#195FA4;border:1px solid #195FA4;border-radius:8px;padding:8px 14px;cursor:pointer;' +
-      'font:700 12px/1 -apple-system,"Segoe UI",sans-serif;';
+    const outlineBtn = (text, color) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = text;
+      b.style.cssText =
+        `background:#fff;color:${color};border:1px solid ${color};border-radius:8px;padding:8px 14px;cursor:pointer;` +
+        'font:700 12px/1 -apple-system,"Segoe UI",sans-serif;';
+      return b;
+    };
+    // Restore defaults: settings only (prompt, webhook, toggles).
+    const resetBtn = outlineBtn('Restore defaults', '#195FA4');
+    // Clear data: history + notifications + the bridge's queue. Not settings.
+    const clearBtn = outlineBtn('Clear data', '#B91C1C');
     saveBtn.addEventListener('click', () => {
       chrome.storage.sync.set({ prompt: promptTa.value, webhookUrl: webhookIn.value.trim() }, () =>
         say('Settings saved ✓')
       );
     });
     resetBtn.addEventListener('click', () => {
-      promptTa.value = DEFAULT_PROMPT;
-      chrome.storage.sync.set({ prompt: DEFAULT_PROMPT }, () => say('Prompt reset ✓'));
+      const defaults = { prompt: DEFAULT_PROMPT, webhookUrl: 'http://localhost:8931', instant: false, model: 'light' };
+      promptTa.value = defaults.prompt;
+      webhookIn.value = defaults.webhookUrl;
+      chrome.storage.sync.set(defaults, () => say('Defaults restored ✓'));
+    });
+    clearBtn.addEventListener('click', () => {
+      if (!confirm('Clear all data? This drops the report history, notifications and the queue at the bridge. Settings stay.')) return;
+      chrome.storage.local.set({ history: [], notifications: [] }, () => {
+        try {
+          chrome.runtime.sendMessage({ type: 'clearQueue' }, (ok) => {
+            void chrome.runtime.lastError;
+            say(ok ? 'Data cleared ✓' : 'Data cleared — bridge not reachable, queue may remain');
+          });
+        } catch (e) {
+          say('Data cleared ✓');
+        }
+      });
     });
     const row = document.createElement('div');
     row.style.cssText = 'display:flex;gap:10px;margin-top:16px;';
-    row.append(saveBtn, resetBtn);
+    row.append(saveBtn, resetBtn, clearBtn);
     pane.append(mkLabel('Prompt prepended to every report'), promptTa, mkLabel('Webhook URL'), webhookIn, hint, row);
     try {
       chrome.storage.sync.get({ prompt: DEFAULT_PROMPT, webhookUrl: 'http://localhost:8931' }, (v) => {
@@ -311,6 +354,7 @@
 
   window.SlopOffPanes = {
     DEFAULT_PROMPT,
+    logNotif,
     toast,
     mountTabs,
     renderShortcuts,

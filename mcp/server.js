@@ -82,14 +82,22 @@ const isWaiting = () => {
 let waiters = []; // pending wait_for_report resolvers
 
 // Lifecycle: queued (fresh) → applying (consumed, done:false) → done.
-// The browser keeps showing a report as pending until the agent calls
-// notify_browser, which completes every in-flight report.
+// Done is signalled by notify_browser, and inferred whenever the agent picks
+// up the next report or goes back to waiting — the /slop-off loop is serial,
+// so either one means the previous report is finished. That way a loop that
+// forgets notify_browser can't leave reports stuck on "applying".
+const inFlight = () => queue.filter((r) => r.consumed && r.done === false);
+const completeInFlight = () => {
+  const busy = inFlight();
+  busy.forEach((r) => (r.done = true));
+  if (busy.length) saveQueue();
+};
 const consume = (r) => {
+  completeInFlight(); // ponytail: assumes one serial loop; fine for localhost
   r.consumed = true;
   r.done = false;
   saveQueue();
 };
-const inFlight = () => queue.filter((r) => r.consumed && r.done === false);
 
 const pushReport = (entry) => {
   const report = {
@@ -137,6 +145,19 @@ const server = http.createServer((req, res) => {
       }
       res.statusCode = 200;
       return res.end(`slop-off bridge: ${queue.length} report(s) queued\n`);
+    }
+    if ((req.url || '').startsWith('/clear')) {
+      // "Clear data" in the extension: drop the whole queue and event log.
+      loadQueue();
+      const stale = queue.filter((r) => !r.consumed || r.done === false);
+      stale.forEach((r) => {
+        r.consumed = true;
+        r.done = true;
+      });
+      saveQueue();
+      events = [];
+      saveEvents();
+      return res.end(`cleared ${stale.length}`);
     }
     if ((req.url || '').startsWith('/cancel')) {
       // Extension cancels a queued report: mark it consumed so no agent
@@ -238,12 +259,25 @@ const TOOLS = [
   },
 ];
 
-const asText = (r) =>
-  r
-    ? `# Edit report ${r.id} (${r.ts}, ${r.count ?? '?'} edits${
-        r.model ? `, model: ${r.model}` : ''
-      })\n\n${r.report}`
-    : 'No report available.';
+// Header includes the backlog so the agent can report progress ("2 more
+// queued") without an extra tool call. The footer bakes the notify_browser
+// instruction into every report, so a summary comes back regardless of
+// which skill version (or none) the agent runs.
+const asText = (r) => {
+  if (!r) return 'No report available.';
+  const backlog = queue.filter((q) => !q.consumed).length;
+  return (
+    `# Edit report ${r.id} (${r.ts}, ${r.count ?? '?'} edits${
+      r.model ? `, model: ${r.model}` : ''
+    }, ${backlog} more report${backlog === 1 ? '' : 's'} queued)\n\n${r.report}\n\n` +
+    '---\n' +
+    'IMPORTANT: after applying (or failing to apply) these edits, call the ' +
+    'slop-off tool `notify_browser` with a concrete 1-2 line summary of what ' +
+    'you changed and in which files (e.g. "Hero heading updated in ' +
+    'index.html"). The user sees this as a toast in the browser; never skip ' +
+    'it and never send an empty message.\n'
+  );
+};
 
 async function callTool(name, args = {}) {
   loadQueue(); // pick up reports received by another instance
@@ -261,9 +295,13 @@ async function callTool(name, args = {}) {
       : 'No new reports.' + tail;
   }
   if (name === 'notify_browser') {
+    const message = String(args.message || '').trim().slice(0, 300);
+    if (!message) {
+      return 'Ignored: empty message. Call notify_browser again with a 1-2 line summary of what you changed.';
+    }
     loadEvents();
     // ponytail: Date.now() as id — monotonic enough for one machine
-    events.push({ id: Date.now(), ts: new Date().toISOString(), message: String(args.message || '').slice(0, 300) });
+    events.push({ id: Date.now(), ts: new Date().toISOString(), message });
     saveEvents();
     // The notification doubles as "work finished": complete every in-flight
     // report so the browser's pending count drops now, not at pickup.
@@ -295,6 +333,7 @@ async function callTool(name, args = {}) {
       return asText(next);
     }
     const timeoutMs = Math.max(1, Number(args.timeout_seconds || 120)) * 1000;
+    completeInFlight(); // agent is waiting again → nothing is being applied
     setWaiting(timeoutMs);
     return await new Promise((resolve) => {
       const finish = (text) => {

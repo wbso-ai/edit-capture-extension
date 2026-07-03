@@ -88,11 +88,17 @@ function buildReport(promptPrefix, sections, fallbackUrl, model) {
 // Runs in the page: show a status toast (gold accent).
 function showStatusToast(message) {
   const toast = document.createElement('div');
+  toast.setAttribute('data-slop-toast', '');
   toast.textContent = message;
+  // Stack upward from the bottom; the lowest 70px belong to the host page.
+  let bottom = 78;
+  for (const el of document.querySelectorAll('[data-slop-toast],[data-slop-stack]')) {
+    bottom = Math.max(bottom, Math.round(innerHeight - el.getBoundingClientRect().top + 8));
+  }
   Object.assign(toast.style, {
     position: 'fixed',
     right: '20px',
-    bottom: '20px',
+    bottom: `${bottom}px`,
     zIndex: '2147483647',
     background: '#001E35',
     color: '#fff',
@@ -112,7 +118,15 @@ function showStatusToast(message) {
   }, 2500);
 }
 
+// Every toast lands in the notification history too (agent and internal).
+async function logNotification(message, kind = 'internal') {
+  const { notifications = [] } = await chrome.storage.local.get('notifications');
+  notifications.unshift({ ts: new Date().toISOString(), message, kind });
+  await chrome.storage.local.set({ notifications: notifications.slice(0, 50) });
+}
+
 async function toastIn(tabId, message) {
+  await logNotification(message);
   try {
     await chrome.scripting.executeScript({
       target: { tabId },
@@ -184,9 +198,8 @@ let pollTimer = 0;
 // Runs in the page: agent status toast (green accent, replaces the previous).
 // Clicking it opens the settings page with the notification history.
 function showAgentToast(message) {
-  document.getElementById('slop-off-agent-toast')?.remove();
   const toast = document.createElement('div');
-  toast.id = 'slop-off-agent-toast';
+  toast.setAttribute('data-slop-toast', '');
   toast.textContent = `🤖 ${message}`;
   toast.title = 'Click to see all agent notifications';
   toast.style.cursor = 'pointer';
@@ -196,10 +209,15 @@ function showAgentToast(message) {
     } catch (e) {}
     toast.remove();
   });
+  // Stack upward from the bottom; the lowest 70px belong to the host page.
+  let bottom = 78;
+  for (const el of document.querySelectorAll('[data-slop-toast],[data-slop-stack]')) {
+    bottom = Math.max(bottom, Math.round(innerHeight - el.getBoundingClientRect().top + 8));
+  }
   Object.assign(toast.style, {
     position: 'fixed',
     right: '20px',
-    bottom: '20px',
+    bottom: `${bottom}px`,
     zIndex: '2147483647',
     maxWidth: '360px',
     background: '#001E35',
@@ -268,16 +286,21 @@ async function pollStatus() {
   if (!status) return;
   await chrome.action.setBadgeBackgroundColor({ color: '#B45309' });
   await chrome.action.setBadgeText({ text: status.pending ? String(status.pending) : '' });
-  const fresh = (status.events || []).filter((ev) => ev.id > (st.lastEventId || 0));
+  // Guard against empty events from older bridges: nothing to show or log.
+  const fresh = (status.events || []).filter(
+    (ev) => ev.id > (st.lastEventId || 0) && ev.message && ev.message.trim()
+  );
   if (fresh.length || status.pending) {
     st.until = Date.now() + POLL_WINDOW_MS; // activity keeps the poll alive
     if (fresh.length) st.lastEventId = fresh[fresh.length - 1].id;
     await chrome.storage.session.set({ [POLL_KEY]: st });
   }
   if (fresh.length) {
-    // Keep a readable history on the settings page (newest first, last 50).
+    // Keep a readable history (newest first, last 50).
     const { notifications = [] } = await chrome.storage.local.get('notifications');
-    notifications.unshift(...fresh.map((ev) => ({ ts: ev.ts, message: ev.message })).reverse());
+    notifications.unshift(
+      ...fresh.map((ev) => ({ ts: ev.ts, message: ev.message, kind: 'agent' })).reverse()
+    );
     await chrome.storage.local.set({ notifications: notifications.slice(0, 50) });
   }
   for (const ev of fresh) await toastInTab(st.tabId, ev.message);
@@ -363,6 +386,24 @@ chrome.tabs.onUpdated.addListener(async (tabId, info) => {
 // Receive (debounced) edit snapshots from the content script, and the
 // confirm/cancel answers from the preview panel.
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (msg.type === 'clearQueue') {
+    // "Clear data": also drop the bridge's queue + events. Callable from the
+    // overlay and the options page (which has no tab), hence above the guard.
+    (async () => {
+      const { webhookUrl } = await chrome.storage.sync.get({ webhookUrl: 'http://localhost:8931' });
+      const url = webhookUrl.trim();
+      if (!url) return sendResponse(true); // nothing bridge-side to clear
+      try {
+        const res = await fetch(url.replace(/\/$/, '') + '/clear', { method: 'POST' });
+        chrome.action.setBadgeText({ text: '' });
+        sendResponse(res.ok);
+      } catch (e) {
+        sendResponse(false);
+      }
+    })();
+    return true;
+  }
+
   const tabId = sender.tab?.id;
   if (!tabId) return;
 
