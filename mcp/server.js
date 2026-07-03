@@ -80,13 +80,31 @@ const isWaiting = () => {
 };
 
 let waiters = []; // pending wait_for_report resolvers
+// Aborted wait_for_report calls (user pressed stop/Esc): finish the wait
+// right away so the waiting flag clears in seconds, not after the timeout.
+const cancels = new Map(); // request id -> abort fn
+const cancelledIds = new Set(); // ids we must not reply to
 
 // Lifecycle: queued (fresh) → applying (consumed, done:false) → done.
 // Done is signalled by notify_browser, and inferred whenever the agent picks
 // up the next report or goes back to waiting — the /slop-off loop is serial,
 // so either one means the previous report is finished. That way a loop that
 // forgets notify_browser can't leave reports stuck on "applying".
-const inFlight = () => queue.filter((r) => r.consumed && r.done === false);
+// ponytail: 5 min TTL — an "applying" report older than that means the agent
+// stopped mid-way; never show it as busy forever. Raise if long applies
+// get cut short cosmetically.
+const IN_FLIGHT_TTL = 5 * 60 * 1000;
+const inFlight = () => {
+  let healed = false;
+  for (const r of queue) {
+    if (r.consumed && r.done === false && (!r.pickedAt || Date.now() - r.pickedAt > IN_FLIGHT_TTL)) {
+      r.done = true;
+      healed = true;
+    }
+  }
+  if (healed) saveQueue();
+  return queue.filter((r) => r.consumed && r.done === false);
+};
 const completeInFlight = () => {
   const busy = inFlight();
   busy.forEach((r) => (r.done = true));
@@ -96,6 +114,7 @@ const consume = (r) => {
   completeInFlight(); // ponytail: assumes one serial loop; fine for localhost
   r.consumed = true;
   r.done = false;
+  r.pickedAt = Date.now();
   saveQueue();
 };
 
@@ -104,7 +123,6 @@ const pushReport = (entry) => {
     id: `${Date.now()}-${queue.length}`,
     ts: new Date().toISOString(),
     count: entry.count ?? null,
-    model: entry.model || null,
     urls: entry.urls || [],
     report: String(entry.report || ''),
     consumed: false,
@@ -267,9 +285,8 @@ const asText = (r) => {
   if (!r) return 'No report available.';
   const backlog = queue.filter((q) => !q.consumed).length;
   return (
-    `# Edit report ${r.id} (${r.ts}, ${r.count ?? '?'} edits${
-      r.model ? `, model: ${r.model}` : ''
-    }, ${backlog} more report${backlog === 1 ? '' : 's'} queued)\n\n${r.report}\n\n` +
+    `# Edit report ${r.id} (${r.ts}, ${r.count ?? '?'} edits, ` +
+    `${backlog} more report${backlog === 1 ? '' : 's'} queued)\n\n${r.report}\n\n` +
     '---\n' +
     'IMPORTANT: after applying (or failing to apply) these edits, call the ' +
     'slop-off tool `notify_browser` with a concrete 1-2 line summary of what ' +
@@ -279,7 +296,7 @@ const asText = (r) => {
   );
 };
 
-async function callTool(name, args = {}) {
+async function callTool(name, args = {}, reqId) {
   loadQueue(); // pick up reports received by another instance
   if (name === 'list_reports') {
     const fresh = queue.filter((r) => !r.consumed);
@@ -289,7 +306,7 @@ async function callTool(name, args = {}) {
       ? fresh
           .map(
             (r) =>
-              `${r.id}  ${r.ts}  ${r.count ?? '?'} edits  ${r.model || '-'}  ${(r.urls || []).join(', ')}`
+              `${r.id}  ${r.ts}  ${r.count ?? '?'} edits  ${(r.urls || []).join(', ')}`
           )
           .join('\n') + tail
       : 'No new reports.' + tail;
@@ -334,30 +351,54 @@ async function callTool(name, args = {}) {
     }
     const timeoutMs = Math.max(1, Number(args.timeout_seconds || 120)) * 1000;
     completeInFlight(); // agent is waiting again → nothing is being applied
-    setWaiting(timeoutMs);
+    // Short-lease heartbeat instead of one long lease: if the session is
+    // stopped or dies mid-wait, "waiting" expires within ~5s instead of
+    // lingering for the full wait timeout.
+    setWaiting(5000);
     return await new Promise((resolve) => {
+      let fsw = null;
+      const hb = setInterval(() => setWaiting(5000), 2000);
       const finish = (text) => {
         clearTimeout(timer);
         clearInterval(poll);
+        clearInterval(hb);
+        try {
+          fsw?.close();
+        } catch (e) {}
         waiters = waiters.filter((w) => w !== resolver);
+        cancels.delete(reqId);
         setWaiting(0);
         resolve(text);
       };
+      if (reqId !== undefined) {
+        cancels.set(reqId, () => {
+          cancelledIds.add(reqId);
+          finish('cancelled');
+        });
+      }
       const timer = setTimeout(
         () => finish('No report arrived within the timeout. Call wait_for_report again to keep waiting.'),
         timeoutMs
       );
       const resolver = (r) => finish(asText(r));
       waiters.push(resolver);
-      // Fallback for instances without the HTTP port: watch the queue file.
-      const poll = setInterval(() => {
+      // For instances without the HTTP port: react to queue-file writes
+      // instantly, with a slow poll as belt-and-braces. Watch the directory,
+      // not the file — the file may not exist yet and gets rewritten.
+      const check = () => {
         loadQueue();
         const r = queue.find((q) => !q.consumed);
         if (r) {
           consume(r);
           finish(asText(r));
         }
-      }, 1000);
+      };
+      try {
+        fsw = fs.watch(DIR, (event, filename) => {
+          if (!filename || filename === path.basename(QUEUE_FILE)) check();
+        });
+      } catch (e) {}
+      const poll = setInterval(check, 1000);
     });
   }
   throw new Error(`Unknown tool: ${name}`);
@@ -400,8 +441,11 @@ async function handle(req) {
     } else if (method === 'tools/list') {
       reply({ tools: TOOLS });
     } else if (method === 'tools/call') {
-      const text = await callTool(params.name, params.arguments);
-      reply({ content: [{ type: 'text', text }] });
+      const text = await callTool(params.name, params.arguments, id);
+      // A cancelled request must not get a response.
+      if (!cancelledIds.delete(id)) reply({ content: [{ type: 'text', text }] });
+    } else if (method === 'notifications/cancelled') {
+      cancels.get(params?.requestId)?.();
     } else if (method === 'ping') {
       reply({});
     } else {

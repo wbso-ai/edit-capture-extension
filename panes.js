@@ -284,7 +284,7 @@
       );
     });
     resetBtn.addEventListener('click', () => {
-      const defaults = { prompt: DEFAULT_PROMPT, webhookUrl: 'http://localhost:8931', instant: false, model: 'light' };
+      const defaults = { prompt: DEFAULT_PROMPT, webhookUrl: 'http://localhost:8931', instant: false };
       promptTa.value = defaults.prompt;
       webhookIn.value = defaults.webhookUrl;
       chrome.storage.sync.set(defaults, () => say('Defaults restored ✓'));

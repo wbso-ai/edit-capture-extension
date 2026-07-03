@@ -45,12 +45,11 @@ function upsertSection(sections, { url, edits, notes }) {
 
 const sectionSize = (s) => s.edits.length + (s.notes?.length || 0);
 
-function buildReport(promptPrefix, sections, fallbackUrl, model) {
+function buildReport(promptPrefix, sections, fallbackUrl) {
   const parts = [];
   if (promptPrefix && promptPrefix.trim()) {
     parts.push(promptPrefix.trim(), '');
   }
-  if (model) parts.push(`model: ${model}`, '');
 
   const withContent = sections.filter((s) => sectionSize(s) > 0);
   if (withContent.length === 0) {
@@ -327,14 +326,14 @@ chrome.storage.session.get(POLL_KEY).then(({ [POLL_KEY]: st }) => {
 
 // POST the report to the configured webhook (e.g. the MCP bridge).
 // Returns null when no webhook is configured, else whether it succeeded.
-async function postWebhook(report, count, sections, model) {
+async function postWebhook(report, count, sections) {
   const { webhookUrl } = await chrome.storage.sync.get({ webhookUrl: 'http://localhost:8931' });
   if (!webhookUrl.trim()) return null;
   try {
     const res = await fetch(webhookUrl.trim(), {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ report, count, model, urls: [...new Set(sections.map((s) => s.url))] }),
+      body: JSON.stringify({ report, count, urls: [...new Set(sections.map((s) => s.url))] }),
     });
     return res.ok;
   } catch (e) {
@@ -345,8 +344,8 @@ async function postWebhook(report, count, sections, model) {
 // Build the final report, save it to history, send it to the agent.
 // No clipboard: the webhook is the delivery channel; history is the backup.
 async function finalizeReport(tabId, sections, fallbackUrl) {
-  const { prompt, model } = await chrome.storage.sync.get({ prompt: DEFAULT_PROMPT, model: 'light' });
-  const report = buildReport(prompt, sections, fallbackUrl, model);
+  const { prompt } = await chrome.storage.sync.get({ prompt: DEFAULT_PROMPT });
+  const report = buildReport(prompt, sections, fallbackUrl);
   const count = sections.reduce((n, s) => n + sectionSize(s), 0);
   if (!count) {
     await toastIn(tabId, 'No changes — nothing sent');
@@ -354,7 +353,7 @@ async function finalizeReport(tabId, sections, fallbackUrl) {
     return;
   }
   await saveHistory(report, count, sections);
-  const sent = await postWebhook(report, count, sections, model);
+  const sent = await postWebhook(report, count, sections);
   if (sent === true) {
     await startPolling(tabId);
     await toastIn(tabId, `Sent to agent — ${count} edit${count === 1 ? '' : 's'}`);
@@ -423,13 +422,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       upsertSection(sections, msg);
       const withContent = sections.filter((s) => sectionSize(s) > 0);
       if (!withContent.length) return sendResponse(false);
-      const { prompt, model } = await chrome.storage.sync.get({
-        prompt: DEFAULT_PROMPT,
-        model: 'light',
-      });
-      const report = buildReport(prompt, withContent, msg.url, model);
+      const { prompt } = await chrome.storage.sync.get({ prompt: DEFAULT_PROMPT });
+      const report = buildReport(prompt, withContent, msg.url);
       const count = withContent.reduce((n, s) => n + sectionSize(s), 0);
-      const sent = await postWebhook(report, count, withContent, model);
+      const sent = await postWebhook(report, count, withContent);
       if (!sent) return sendResponse(false);
       await startPolling(tabId);
       await saveHistory(report, count, withContent);
@@ -451,7 +447,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       const withContent = sections.filter((s) => sectionSize(s) > 0);
       if (!withContent.length) return;
       const { prompt } = await chrome.storage.sync.get({ prompt: DEFAULT_PROMPT });
-      const report = buildReport(prompt, withContent, sender.tab?.url || '', null);
+      const report = buildReport(prompt, withContent, sender.tab?.url || '');
       const count = withContent.reduce((n, s) => n + sectionSize(s), 0);
       await saveHistory(report, count, withContent, true);
     })();
@@ -512,7 +508,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           body: JSON.stringify({
             report: msg.report,
             count: msg.count,
-            model: null,
             urls: msg.urls || [],
           }),
         });

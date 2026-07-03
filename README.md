@@ -85,11 +85,6 @@ what to replace it with. No ambiguity, no back-and-forth.
 - 📤 **Interim submit** — with changes pending, a send button appears next
   to the chip (or press ⌘⏎): ships everything now and the session keeps
   going with a fresh baseline
-- 🪶 **Light or heavy model** — the feather/dumbbell toggle picks how much
-  thinking your agent should spend: light for quick text tweaks (fast,
-  cheap model), heavy when instructions need real reasoning; the choice
-  rides along as a `model:` line in the report and a field in the webhook
-  payload, and the `/slop-off` skill routes accordingly
 - 🔔 **On-page toast** — a confirmation appears when the report is sent
 - 💾 **Never loses a report** — every report (sent, failed, or discarded)
   stays in the history, ready to re-apply or copy manually
@@ -142,8 +137,6 @@ For each Before/After pair: locate the Before HTML in the file and replace it wi
 For each Element/Instruction pair: locate the element in the source and carry out the instruction on it.
 The selector line describes where the element lives in the rendered DOM, as a hint for finding it in the source.
 Keep everything else unchanged and preserve the original formatting and indentation.
-
-model: light
 
 ---
 
@@ -234,11 +227,10 @@ or non-interactively: `npx skills add wbso-ai/slop-off -g -a claude-code -y`).
 
 In a Claude Code session in the project whose site you're editing:
 
-- `/slop-off` — background loop: a cheap watcher subagent waits for reports
-  while your main session stays free for other work. Per report you get two
-  status lines (*📥 3 change(s) received* → *✅ 3 change(s) applied —
-  files*), and the actual work is delegated to a subagent matching the
-  report's `model:` line (light → Haiku, heavy → Opus). Say *stop* to end
+- `/slop-off` — loop in the main thread: waits for reports and applies
+  them directly, so every report gives an immediate status line (*✅ 3
+  change(s) applied — files · 2 still queued*). The model doing the work
+  is simply the model of your session — pick it there. Say *stop* to end
   the loop
 - `/slop-off once` — wait for and apply a single report
 - `/slop-off latest` — apply the most recent report, without waiting
@@ -304,4 +296,5 @@ Contributions are welcome: open an issue or a pull request.
 
 ## License
 
-[MIT](LICENSE) © 2026 Jankees van Woezik &lt;jankees@wbso.ai&gt;
+[MIT](LICENSE) © 2026 Jankees van Woezik &lt;jankees@wbso.ai&gt; &
+Paul Tondeur &lt;paul@wbso.ai&gt;

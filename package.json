@@ -1,6 +1,6 @@
 {
   "name": "slop-off",
-  "version": "1.12.0",
+  "version": "1.13.0",
   "description": "MCP bridge for the Slop Off browser extension: receives before/after edit reports over HTTP and serves them to your coding agent as MCP tools.",
   "bin": {
     "slop-off": "mcp/server.js"
@@ -19,6 +19,9 @@
     "slop-off"
   ],
   "author": "Jankees van Woezik <jankees@wbso.ai>",
+  "contributors": [
+    "Paul Tondeur <paul@wbso.ai>"
+  ],
   "license": "MIT",
   "homepage": "https://github.com/wbso-ai/slop-off#readme",
   "repository": {

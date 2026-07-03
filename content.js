@@ -22,7 +22,6 @@
   let viewMode = 'new'; // 'original' | 'diff' | 'new' — what the page currently shows
   let instantMode = false; // ⚡: flush each change to the agent after a short pause
   let instantTimer = null;
-  let heavyModel = false; // 🏋: ask the agent to use a heavy/thinking model
   let adopting = false; // getSections roundtrip in flight; hold syncs so they can't clobber old edits
   let syncWanted = false;
   let syncTimer = null;
@@ -423,11 +422,9 @@
     bridgeTimer = setInterval(pollPending, 1000); // localhost: cheap, keeps the pill snappy
     pollPending();
     try {
-      chrome.storage.sync.get({ instant: false, model: 'light' }, (v) => {
+      chrome.storage.sync.get({ instant: false }, (v) => {
         instantMode = Boolean(v && v.instant);
-        heavyModel = v?.model === 'heavy';
         paintModeBtn();
-        paintModelBtn();
       });
     } catch (e) {}
   };
@@ -1068,7 +1065,6 @@
   let listEl = null;
   let viewBarEl = null;
   let modeBtn = null;
-  let modelBtn = null;
   let submitBtn = null;
   let tipEl = null;
   let helpEl = null;
@@ -1484,22 +1480,6 @@
     batchSeg.addEventListener('click', () => setMode(false));
     instantSeg.addEventListener('click', () => setMode(true));
     modeBtn.append(batchSeg, instantSeg);
-    // modelBtn is a 2-segment pill: [ 🪶 light | 🏋 heavy ]
-    modelBtn = document.createElement('div');
-    modelBtn.style.cssText = SEG_PILL;
-    const lightSeg = makeSegBtn(SVG_FEATHER, 'Light model: fast and cheap', true);
-    const heavySeg = makeSegBtn(SVG_DUMBBELL, 'Heavy model: for changes that need real thinking', false);
-    const setModel = (next) => {
-      if (heavyModel === next) return;
-      heavyModel = next;
-      try {
-        chrome.storage.sync.set({ model: heavyModel ? 'heavy' : 'light' });
-      } catch (e) {}
-      paintModelBtn();
-    };
-    lightSeg.addEventListener('click', () => setModel(false));
-    heavySeg.addEventListener('click', () => setModel(true));
-    modelBtn.append(lightSeg, heavySeg);
     submitBtn = document.createElement('button');
     submitBtn.innerHTML =
       '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
@@ -1546,9 +1526,8 @@
       'box-shadow:0 8px 30px rgba(0,30,53,.25);max-height:35vh;overflow:auto;width:340px;';
     const chipRow = document.createElement('div');
     chipRow.style.cssText = 'display:flex;gap:8px;align-items:center;';
-    chipRow.append(helpBtn, modeBtn, modelBtn, pendingEl, chipEl, submitBtn, discardBtn);
+    chipRow.append(helpBtn, modeBtn, pendingEl, chipEl, submitBtn, discardBtn);
     paintModeBtn();
-    paintModelBtn();
     panelEl.append(pendingListEl, listEl, viewBarEl, chipRow);
     (document.body || document.documentElement).appendChild(panelEl);
   };
@@ -1905,32 +1884,13 @@
     '<circle cx="12" cy="12" r="3"/>' +
     '<path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>';
 
-  const SVG_FEATHER =
-    '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
-    'stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
-    '<path d="M20.24 12.24a6 6 0 0 0-8.49-8.49L5 10.5V19h8.5z"/>' +
-    '<line x1="16" y1="8" x2="2" y2="22"/><line x1="17.5" y1="15" x2="9" y2="15"/></svg>';
-  const SVG_DUMBBELL =
-    '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
-    'stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
-    '<path d="M14.4 14.4 9.6 9.6"/>' +
-    '<path d="M18.657 21.485a2 2 0 1 1-2.829-2.828l-1.767 1.768a2 2 0 1 1-2.829-2.829l6.364-6.364a2 2 0 1 1 2.829 2.829l-1.768 1.767a2 2 0 1 1 2.828 2.829z"/>' +
-    '<path d="m21.5 21.5-1.4-1.4"/><path d="M3.9 3.9 2.5 2.5"/>' +
-    '<path d="M6.404 12.768a2 2 0 1 1-2.829-2.829l1.768-1.767a2 2 0 1 1-2.828-2.829l2.828-2.828a2 2 0 1 1 2.829 2.828l1.767-1.768a2 2 0 1 1 2.829 2.829z"/></svg>';
-
-  const paintModelBtn = () => {
-    if (!modelBtn) return;
-    paintSeg(modelBtn.children[0], !heavyModel); // light
-    paintSeg(modelBtn.children[1], heavyModel); // heavy
-  };
-
   const removePanel = () => {
     clearInterval(helpPingTimer);
     helpPingTimer = 0;
     panelEl?.remove();
     tipEl?.remove();
     helpEl?.remove();
-    panelEl = chipEl = listEl = viewBarEl = modeBtn = modelBtn = submitBtn = tipEl = helpEl = pendingEl = pendingListEl = bridgeDotEl = null;
+    panelEl = chipEl = listEl = viewBarEl = modeBtn = submitBtn = tipEl = helpEl = pendingEl = pendingListEl = bridgeDotEl = null;
     panelOpen = false;
     pendingOpen = false;
   };

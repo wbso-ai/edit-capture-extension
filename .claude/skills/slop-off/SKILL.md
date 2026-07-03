@@ -11,67 +11,29 @@ description: >
 
 # Apply browser edits
 
-Process reports from the `slop-off` MCP server and apply them to the source.
+Process reports from the `slop-off` MCP server and apply them to the
+source. Everything happens in the MAIN thread — no subagents — so every
+report gives an immediate "✅ …" line and nothing sits between the queue
+and the work.
 
 ## Mode
 
-- **Default (background loop)**: the waiting happens in a background
-  subagent so this main session stays free for other work.
-  1. Spawn a **watcher** via the Agent tool: `model: "haiku"`,
-     `run_in_background: true`, prompt: *"Call the slop-off MCP tool
-     `wait_for_report` with timeout_seconds: 60. If it responds with 'No
-     report arrived', call it again, up to 5 times. Return as your final
-     answer only the full report text, or exactly NO_REPORT if nothing
-     came."*
-  2. Report once: "I'm waiting in the background for browser edits — say
-     'stop' when you're done" and continue with whatever the user is doing
-     (or hand the turn back).
-  3. Once the watcher finishes you're notified. Report received →
-     first report in a single line "📥 N change(s) received · M report(s)
-     still queued" (N = edit count, M = the "more reports queued" number —
-     both are in the report header), then process it (see "Model" below)
-     and immediately spawn a new watcher afterwards. NO_REPORT → just spawn
-     a new watcher, without comment — empty watchers are normal, the loop
-     runs until the user says stop. After ~6 empty watchers in a row,
-     mention in one line that you're still waiting (don't ask, don't stop);
-     repeat that at most once an hour.
-  4. If the user says "stop" (or "done"), don't spawn a new watcher
-     anymore.
-- Argument `once`: process exactly one report (may be synchronous with
-  `wait_for_report`) and stop.
+- **Default (loop)**: say once "Waiting for browser edits — say 'stop'
+  when you're done", then loop:
+  1. Call `wait_for_report` with timeout_seconds: 60. Empty? Call it
+     again, silently — empty waits are normal. After ~10 consecutive
+     empty minutes, mention in one line that you're still waiting (don't
+     ask, don't stop); repeat that at most once an hour.
+  2. Report received → apply it per "Apply edits" below, then follow
+     "Per processed report".
+  3. Loop again immediately — more edits may already be queued.
+  Stop only when the user says "stop" (or "done").
+- Argument `once`: process exactly one report and stop.
 - Argument `latest`: call `get_latest_report` (don't wait), process,
   stop.
 - Argument `list`: call `list_reports`, show the queue, ask which one.
-- Argument `clear`: call `clear_reports` and report in a single line how many
-  reports were cleared. Process nothing, then stop.
-
-## Model (light or heavy) — delegation required
-
-You are the orchestrator and do NOT process reports yourself. Spawn a subagent
-per report via the Agent tool with the model the report asks for (the
-`model:` line in the report / the MCP header):
-
-- **`model: light`** (or no line) → `Agent` with `model: "haiku"`
-- **`model: heavy`** → `Agent` with `model: "opus"`
-
-Give the worker subagent in its prompt: the full report, the project's
-working path, and the full "Apply edits" instructions below. Have it report
-which files were changed and which edits were not applicable. Then report to
-the user in a single line: "✅ N change(s) applied — file1, file2 · M still
-queued" (M from the report header; omit the suffix when it's 0 — then say
-"· queue empty, waiting"). Only if something failed a second line:
-"⚠️ not applicable: …". No further explanation. The user must always be able
-to tell from the main thread how much work is still pending.
-Then ALWAYS call the slop-off MCP tool `notify_browser` with that same
-summary (max 2 short lines) — success or failure. The extension shows it as
-a toast on the page, and the call also marks the report as done in the
-browser HUD: skip it and the report stays stuck on "applying" for the user.
-Run the worker synchronously (`run_in_background: false`) so reports are
-processed in order and workers don't touch each other's files — the long wait
-already happens in the background watcher, so this only blocks during the
-actual applying.
-
-Only if the Agent tool is unavailable do you process the report yourself.
+- Argument `clear`: call `clear_reports` and report in a single line how
+  many reports were cleared. Process nothing, then stop.
 
 ## Apply edits
 
@@ -97,8 +59,14 @@ Element/Instruction pairs, each with a CSS selector as a hint.
 
 - Run a quick check if the project has one (typecheck/lint; no
   full build per report in loop mode).
-- Summarize in 1-3 lines: which files, which edits, what failed.
-- Always call `notify_browser` with a 1-2 line summary of what changed
-  (e.g. "Hero heading and CTA text updated in index.html") — also on
-  failure; it completes the report in the browser HUD.
+- ALWAYS call the slop-off MCP tool `notify_browser` with a concrete 1-2
+  line summary of what changed (e.g. "Hero heading and CTA text updated in
+  index.html") — also on failure, never with an empty message. The
+  extension shows it as a toast on the page, and the call marks the report
+  as done in the browser HUD: skip it and the report stays stuck on
+  "applying" for the user.
+- Report to the user in a single line: "✅ N change(s) applied — file1,
+  file2 · M still queued" (N and M come from the report header; when M is
+  0 say "· queue empty, waiting"). Only if something failed a second
+  line: "⚠️ not applicable: …". No further explanation.
 - Go straight back to waiting.
